@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "garmin_outreach",
+  "project_id": "fc9c5bc0-6d5d-4580-a540-dca2d71f99f0"
+}
