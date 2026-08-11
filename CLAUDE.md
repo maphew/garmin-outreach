@@ -58,20 +58,19 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 <!-- END BEADS INTEGRATION -->
 
 
-## Build & Test
+## Project Guidance
 
-_Add your build and test commands here_
+Garmin Outreach is a Python 3.11+ CLI that archives Garmin KML/GPX inputs and produces
+deterministic GIS outputs. User setup and command documentation live in `Readme.md`; architecture,
+invariants, and subsystem-specific verification guidance live in `TECH_DEV.md`.
 
-```bash
-# Example:
-# npm install
-# npm test
+Run the standard quality checks through uv; no environment activation is needed:
+
+```powershell
+uv run ruff format --check src tests
+uv run ruff check . --exclude data --exclude .venv
+uv run pytest
 ```
 
-## Architecture Overview
-
-_Add a brief overview of your project architecture_
-
-## Conventions & Patterns
-
-_Add your project-specific conventions here_
+Never commit `data/`, Garmin exports, browser profiles, credentials, messages, IMEIs, or real
+location history. Test data must be synthetic or redacted.

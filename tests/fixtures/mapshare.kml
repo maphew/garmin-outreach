@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>MapShare Feed</name>
+    <Folder>
+      <name>Messages</name>
+      <Placemark>
+        <name>Tracking Point</name>
+        <TimeStamp><when>2024-06-01T12:00:00Z</when></TimeStamp>
+        <ExtendedData>
+          <Data name="Id"><value>1001</value></Data>
+          <Data name="Time UTC"><value>6/1/2024 12:00:00 PM</value></Data>
+          <Data name="Name"><value>Test User</value></Data>
+          <Data name="Map Display Name"><value>Test</value></Data>
+          <Data name="Device Type"><value>inReach Mini 2</value></Data>
+          <Data name="IMEI"><value>300000000000000</value></Data>
+          <Data name="Latitude"><value>60.000000</value></Data>
+          <Data name="Longitude"><value>-135.000000</value></Data>
+          <Data name="Elevation"><value>700.5 m from MSL</value></Data>
+          <Data name="Velocity"><value>4.2 km/h</value></Data>
+          <Data name="Course"><value>12.5 degrees True</value></Data>
+          <Data name="Valid GPS Fix"><value>True</value></Data>
+          <Data name="In Emergency"><value>False</value></Data>
+          <Data name="Event"><value>Tracking message received.</value></Data>
+        </ExtendedData>
+        <Point><coordinates>-135.0,60.0,700.5</coordinates></Point>
+      </Placemark>
+      <Placemark>
+        <name>Hello</name>
+        <TimeStamp><when>2024-06-01T12:05:00Z</when></TimeStamp>
+        <ExtendedData>
+          <Data name="Id"><value>1002</value></Data>
+          <Data name="IMEI"><value>300000000000000</value></Data>
+          <Data name="Text"><value>Everything is fine.</value></Data>
+          <Data name="Event"><value>Text message received.</value></Data>
+        </ExtendedData>
+        <Point><coordinates>-135.001,60.001,701</coordinates></Point>
+      </Placemark>
+      <Placemark>
+        <name>Tracking Point</name>
+        <TimeStamp><when>2024-06-01T12:10:00Z</when></TimeStamp>
+        <ExtendedData>
+          <Data name="Id"><value>1003</value></Data>
+          <Data name="IMEI"><value>300000000000000</value></Data>
+          <Data name="Event"><value>Tracking message received.</value></Data>
+        </ExtendedData>
+        <Point><coordinates>-135.002,60.002,702</coordinates></Point>
+      </Placemark>
+    </Folder>
+  </Document>
+</kml>

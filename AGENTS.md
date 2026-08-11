@@ -125,3 +125,20 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Project Guidance
+
+Garmin Outreach is a Python 3.11+ CLI that archives Garmin KML/GPX inputs and produces
+deterministic GIS outputs. User setup and command documentation live in `Readme.md`; architecture,
+invariants, and subsystem-specific verification guidance live in `TECH_DEV.md`.
+
+Run the standard quality checks through uv; no environment activation is needed:
+
+```powershell
+uv run ruff format --check src tests
+uv run ruff check . --exclude data --exclude .venv
+uv run pytest
+```
+
+Never commit `data/`, Garmin exports, browser profiles, credentials, messages, IMEIs, or real
+location history. Test data must be synthetic or redacted.

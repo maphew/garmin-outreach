@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Garmin Explore" xmlns="http://www.topografix.com/GPX/1/1">
+  <wpt lat="60.1" lon="-135.1">
+    <ele>750</ele><time>2024-06-02T10:00:00Z</time><name>Camp</name><sym>Campground</sym>
+  </wpt>
+  <rte>
+    <name>Planned route</name>
+    <rtept lat="60.1" lon="-135.1"/><rtept lat="60.2" lon="-135.2"/>
+  </rte>
+  <trk>
+    <name>Recorded track</name>
+    <trkseg>
+      <trkpt lat="60.0" lon="-135.0"><ele>700</ele><time>2024-06-01T12:00:00Z</time></trkpt>
+      <trkpt lat="60.01" lon="-135.01"><ele>710</ele><time>2024-06-01T12:10:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
