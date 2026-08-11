@@ -173,4 +173,4 @@ Location history and message text are sensitive. `data/` is excluded by `.gitign
 
 Browser profiles are equivalent to authenticated sessions. If one is exposed, sign out of Garmin sessions and rotate any affected credentials. Please report security vulnerabilities using the process in [SECURITY.md](SECURITY.md), without attaching private location history or account exports.
 
-Implementation and maintainer notes are available in [TECH_DEV.md](TECH_DEV.md).
+Implementation and maintainer notes are available in [Tech_dev.md](Tech_dev.md).
