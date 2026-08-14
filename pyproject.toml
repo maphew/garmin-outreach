@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.46,<2"]
+browser = ["playwright>=1.46,<2", "rookiepy>=0.5,<1"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.9,<1"]

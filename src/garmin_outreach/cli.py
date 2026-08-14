@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .archive import archive_file
 from .explore import capture_explore
+from .explore_http import browserless_export
 from .mapshare import sync_mapshare
 from .pipeline import rebuild
 
@@ -59,8 +60,31 @@ def parser() -> argparse.ArgumentParser:
         "explore", help="Capture the consumer Explore export through a persistent signed-in browser"
     )
     explore.add_argument("--export-formats", default="kml", choices=("kml", "gpx", "both"))
+    explore.add_argument(
+        "--transport",
+        choices=("http", "browser"),
+        default="http",
+        help="http: browserless export using your browser's saved session (default); "
+        "browser: drive a Playwright browser (use with --no-headless to sign in by hand)",
+    )
     explore.add_argument("--profile-dir", type=Path)
-    explore.add_argument("--headless", action="store_true")
+    explore.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force headless on/off; default auto (headless when a saved session is found)",
+    )
+    explore.add_argument(
+        "--browser",
+        help="Read the Garmin session from this browser (firefox, chrome, edge, ...); "
+        "default auto-detects across installed browsers",
+    )
+    explore.add_argument(
+        "--no-cookies",
+        dest="use_saved_cookies",
+        action="store_false",
+        help="Skip reading a saved browser session and sign in interactively",
+    )
     explore.add_argument("--login-timeout", type=int, default=600)
 
     for command in (ingest, mapshare, explore):
@@ -122,13 +146,22 @@ def main(argv: list[str] | None = None) -> None:
             export_formats = (
                 ("kml", "gpx") if args.export_formats == "both" else (args.export_formats,)
             )
-            result["explore"] = capture_explore(
-                args.data_dir,
-                formats=export_formats,
-                profile_dir=args.profile_dir,
-                headless=args.headless,
-                login_timeout_seconds=args.login_timeout,
-            )
+            if args.transport == "http":
+                result["explore"] = browserless_export(
+                    args.data_dir,
+                    formats=export_formats,
+                    browser=args.browser,
+                )
+            else:
+                result["explore"] = capture_explore(
+                    args.data_dir,
+                    formats=export_formats,
+                    profile_dir=args.profile_dir,
+                    headless=args.headless,
+                    login_timeout_seconds=args.login_timeout,
+                    browser=args.browser,
+                    use_saved_cookies=args.use_saved_cookies,
+                )
         if args.command == "build" or not getattr(args, "no_build", False):
             result["output"] = rebuild(
                 args.data_dir,

@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 from .archive import archive_bytes
+from .browser_cookies import load_garmin_cookies
 
 CAPTURE_EXPORT_REQUEST = r"""
 (formatNumber) => {
@@ -53,8 +54,10 @@ def capture_explore(
     *,
     formats: tuple[str, ...] = ("kml",),
     profile_dir: Path | None = None,
-    headless: bool = False,
+    headless: bool | None = None,
     login_timeout_seconds: int = 600,
+    browser: str | None = None,
+    use_saved_cookies: bool = True,
 ) -> dict:
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -66,6 +69,19 @@ def capture_explore(
             "then run `playwright install chromium`."
         ) from error
 
+    # Borrow a live session from the user's real browser. When one exists there is
+    # no sign-in screen and no Cloudflare challenge, so we can run headless; only
+    # when it is missing do we fall back to a visible interactive login.
+    cookies: list[dict] = []
+    cookie_error: str | None = None
+    if use_saved_cookies:
+        try:
+            cookies = load_garmin_cookies(browser)
+        except RuntimeError as error:
+            cookie_error = str(error)
+    if headless is None:
+        headless = bool(cookies)
+
     profile = profile_dir or data_dir / ".browser-profile"
     profile.mkdir(parents=True, exist_ok=True)
     archive_dir = data_dir / "raw" / "explore"
@@ -75,6 +91,8 @@ def capture_explore(
             context = playwright.chromium.launch_persistent_context(
                 str(profile), headless=headless, accept_downloads=True
             )
+            if cookies:
+                context.add_cookies(cookies)
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto(
@@ -86,10 +104,12 @@ def capture_explore(
                     page.locator("#mapfilters").wait_for(state="attached", timeout=8_000)
                 except PlaywrightTimeout:
                     if headless:
+                        detail = cookie_error or (
+                            "The saved browser session is signed out or expired."
+                        )
                         raise RuntimeError(
-                            "The saved Garmin session is not signed in. Run "
-                            "`garmin-outreach explore` once without --headless and "
-                            "complete sign-in."
+                            f"{detail} Sign in to explore.garmin.com in your browser and "
+                            "re-run, or run with --no-headless to sign in interactively."
                         ) from None
                     print(
                         "Complete Garmin sign-in in the opened browser; export will "
@@ -137,4 +157,8 @@ def capture_explore(
         if "Executable doesn't exist" in message:
             message = "Chromium is not installed; run `playwright install chromium`."
         raise RuntimeError(f"Browser capture failed: {message}") from error
-    return {"exports": results, "profile_dir": str(profile)}
+    return {
+        "exports": results,
+        "profile_dir": str(profile),
+        "authenticated_via": "saved-cookies" if cookies else "interactive-login",
+    }
