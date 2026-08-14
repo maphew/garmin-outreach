@@ -37,11 +37,13 @@ POST per requested format - and turns a read timeout into an actionable
 from __future__ import annotations
 
 import http.cookiejar
+import io
 import json
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +134,25 @@ def build_export_body(users: list[dict], *, chosen_group: str = "") -> dict[str,
         "waypointsNotVisibleSyncIds": "",
         "invisibleRoutesSyncIds": "",
     }
+
+
+def extract_kml_if_kmz(content: bytes) -> bytes:
+    """Return inner KML bytes from a KMZ, or pass raw KML through unchanged.
+
+    Garmin delivers a "KML" export as a KMZ - a zip wrapping ``mapdata.kml`` - so
+    the raw response starts with the zip magic ``PK`` rather than ``<kml``. GPX
+    exports are plain XML and never reach here.
+    """
+    if content[:4] != b"PK\x03\x04":
+        return content
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            kml_names = [name for name in archive.namelist() if name.lower().endswith(".kml")]
+            if not kml_names:
+                raise RuntimeError("Garmin returned a KMZ with no KML file inside.")
+            return archive.read(kml_names[0])
+    except zipfile.BadZipFile as error:
+        raise RuntimeError("Garmin returned a corrupt KMZ export.") from error
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -261,6 +282,8 @@ def browserless_export(
         if not content.strip():
             # A 200 with an empty body is Garmin's signature for a stale session.
             raise RuntimeError(_SESSION_EXPIRED)
+        if format_name == "kml":
+            content = extract_kml_if_kmz(content)
         expected = b"<kml" if format_name == "kml" else b"<gpx"
         if expected not in content[:2000].lower():
             raise RuntimeError(

@@ -7,7 +7,16 @@ exercised separately with a real account.
 
 from __future__ import annotations
 
-from garmin_outreach.explore_http import build_export_body, parse_users
+import io
+import zipfile
+
+import pytest
+
+from garmin_outreach.explore_http import (
+    build_export_body,
+    extract_kml_if_kmz,
+    parse_users,
+)
 
 
 def test_parse_users_bare_list():
@@ -21,9 +30,16 @@ def test_parse_users_bare_list():
     assert users[1]["checked"] is False
 
 
+def test_parse_users_live_envelope():
+    # The real GetUsersSimplified response is a {success, result} envelope; the
+    # user rows live under "result".
+    payload = {"success": True, "result": [{"Id": 7, "GroupID": 5, "Checked": True}]}
+    users = parse_users(payload)
+    assert users == [{"id": "7", "group_id": 5, "checked": True}]
+
+
 def test_parse_users_envelope_and_key_casing():
-    # The response envelope and key casing are the one unconfirmed part of the
-    # contract, so parsing must tolerate both shapes and mixed casing.
+    # Parsing must also tolerate a "Users" envelope and mixed key casing.
     payload = {"Users": [{"id": 7, "groupId": 5}], "Groups": [{"Id": 5}]}
     users = parse_users(payload)
     assert users == [{"id": "7", "group_id": 5, "checked": True}]
@@ -56,3 +72,27 @@ def test_build_export_body_exports_everything():
 def test_build_export_body_empty_users():
     body = build_export_body([])
     assert body["visibleUserIds"] == ""
+
+
+def _kmz(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def test_extract_kml_if_kmz_unwraps_zip():
+    # Garmin delivers a "KML" export as a KMZ wrapping mapdata.kml.
+    inner = b'<?xml version="1.0"?><kml><Document/></kml>'
+    assert extract_kml_if_kmz(_kmz({"mapdata.kml": inner})) == inner
+
+
+def test_extract_kml_if_kmz_passes_raw_kml_through():
+    raw = b"<kml><Document/></kml>"
+    assert extract_kml_if_kmz(raw) == raw
+
+
+def test_extract_kml_if_kmz_rejects_kmz_without_kml():
+    with pytest.raises(RuntimeError, match="no KML"):
+        extract_kml_if_kmz(_kmz({"overlay.png": b"\x89PNG"}))

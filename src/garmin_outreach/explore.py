@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 
 from .archive import archive_bytes
 from .browser_cookies import load_garmin_cookies
+from .explore_http import extract_kml_if_kmz
 
 CAPTURE_EXPORT_REQUEST = r"""
 (formatNumber) => {
@@ -138,6 +139,8 @@ def capture_explore(
                             f"Garmin Explore export failed with HTTP {response.status}"
                         )
                     content = response.body()
+                    if format_name == "kml":
+                        content = extract_kml_if_kmz(content)
                     expected = b"<kml" if format_name == "kml" else b"<gpx"
                     if expected not in content[:2000].lower():
                         raise RuntimeError(
