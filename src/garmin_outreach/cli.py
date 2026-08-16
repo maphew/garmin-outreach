@@ -113,6 +113,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"Unsupported output format(s): {', '.join(sorted(invalid))}")
     try:
         result: dict = {}
+        should_rebuild = False
         if args.command == "ingest":
             archived = []
             for path in args.files:
@@ -123,6 +124,7 @@ def main(argv: list[str] | None = None) -> None:
                 destination, created = archive_file(path, args.data_dir / "raw" / "imports")
                 archived.append({"path": str(destination), "created": created})
             result["archive"] = archived
+            should_rebuild = not args.no_build
         elif args.command == "mapshare":
             if not args.identifier:
                 raise RuntimeError("Supply a MapShare identifier or set GARMIN_MAPSHARE_ID")
@@ -142,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
                 password=password,
                 imei=args.imei,
             )
+            should_rebuild = not args.no_build
         elif args.command == "explore":
             export_formats = (
                 ("kml", "gpx") if args.export_formats == "both" else (args.export_formats,)
@@ -162,7 +165,10 @@ def main(argv: list[str] | None = None) -> None:
                     browser=args.browser,
                     use_saved_cookies=args.use_saved_cookies,
                 )
-        if args.command == "build" or not getattr(args, "no_build", False):
+            should_rebuild = not args.no_build
+        elif args.command == "build":
+            should_rebuild = True
+        if should_rebuild:
             result["output"] = rebuild(
                 args.data_dir,
                 formats=formats,
