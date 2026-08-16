@@ -109,6 +109,9 @@ def test_unknown_command_never_reaches_rebuild(monkeypatch, capsys):
 
     assert calls == []
     captured = capsys.readouterr()
+    # Pins today's placeholder behavior (an unrecognized command prints an
+    # empty JSON object and exits 0); this will change once a real `serve`
+    # command lands, since the spec says `serve` keeps stdout clean.
     assert json.loads(captured.out) == {}
 
 

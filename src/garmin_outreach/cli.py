@@ -11,6 +11,7 @@ from pathlib import Path
 from .archive import archive_file
 from .explore import capture_explore
 from .explore_http import browserless_export
+from .locking import writer_lock
 from .mapshare import sync_mapshare
 from .pipeline import rebuild
 
@@ -112,70 +113,78 @@ def main(argv: list[str] | None = None) -> None:
     if invalid:
         raise SystemExit(f"Unsupported output format(s): {', '.join(sorted(invalid))}")
     try:
-        result: dict = {}
-        should_rebuild = False
-        if args.command == "ingest":
-            archived = []
-            for path in args.files:
-                if not path.is_file():
-                    raise RuntimeError(f"Input does not exist: {path}")
-                if path.suffix.lower() not in {".kml", ".gpx"}:
-                    raise RuntimeError(f"Input must be KML or GPX: {path}")
-                destination, created = archive_file(path, args.data_dir / "raw" / "imports")
-                archived.append({"path": str(destination), "created": created})
-            result["archive"] = archived
-            should_rebuild = not args.no_build
-        elif args.command == "mapshare":
+        if args.command == "mapshare":
+            # Resolve the identifier and (interactively, if requested) the
+            # password before taking the writer lock: getpass.getpass()
+            # blocks on terminal input, and doing that inside the lock
+            # would stall every other writer while this process waits at
+            # the prompt.
             if not args.identifier:
                 raise RuntimeError("Supply a MapShare identifier or set GARMIN_MAPSHARE_ID")
-            password = (
+            mapshare_password = (
                 getpass.getpass("MapShare password: ")
                 if args.ask_password
                 else os.environ.get("GARMIN_MAPSHARE_PASSWORD")
             )
-            result["mapshare"] = sync_mapshare(
-                args.identifier,
-                args.data_dir,
-                start=args.start,
-                end=args.end,
-                full=args.full,
-                chunk_days=args.chunk_days,
-                username=args.username,
-                password=password,
-                imei=args.imei,
-            )
-            should_rebuild = not args.no_build
-        elif args.command == "explore":
-            export_formats = (
-                ("kml", "gpx") if args.export_formats == "both" else (args.export_formats,)
-            )
-            if args.transport == "http":
-                result["explore"] = browserless_export(
-                    args.data_dir,
-                    formats=export_formats,
-                    browser=args.browser,
-                )
-            else:
-                result["explore"] = capture_explore(
-                    args.data_dir,
-                    formats=export_formats,
-                    profile_dir=args.profile_dir,
-                    headless=args.headless,
-                    login_timeout_seconds=args.login_timeout,
-                    browser=args.browser,
-                    use_saved_cookies=args.use_saved_cookies,
-                )
-            should_rebuild = not args.no_build
-        elif args.command == "build":
-            should_rebuild = True
-        if should_rebuild:
-            result["output"] = rebuild(
-                args.data_dir,
-                formats=formats,
-                gap_hours=args.trip_gap_hours,
-                max_speed_kmh=args.max_speed_kmh,
-                jump_km=args.jump_km,
-            )
+        result: dict = {}
+        should_rebuild = False
+        if args.command in {"ingest", "mapshare", "explore", "build"}:
+            with writer_lock(args.data_dir, label=args.command):
+                if args.command == "ingest":
+                    archived = []
+                    for path in args.files:
+                        if not path.is_file():
+                            raise RuntimeError(f"Input does not exist: {path}")
+                        if path.suffix.lower() not in {".kml", ".gpx"}:
+                            raise RuntimeError(f"Input must be KML or GPX: {path}")
+                        destination, created = archive_file(path, args.data_dir / "raw" / "imports")
+                        archived.append({"path": str(destination), "created": created})
+                    result["archive"] = archived
+                    should_rebuild = not args.no_build
+                elif args.command == "mapshare":
+                    result["mapshare"] = sync_mapshare(
+                        args.identifier,
+                        args.data_dir,
+                        start=args.start,
+                        end=args.end,
+                        full=args.full,
+                        chunk_days=args.chunk_days,
+                        username=args.username,
+                        password=mapshare_password,
+                        imei=args.imei,
+                    )
+                    should_rebuild = not args.no_build
+                elif args.command == "explore":
+                    export_formats = (
+                        ("kml", "gpx") if args.export_formats == "both" else (args.export_formats,)
+                    )
+                    if args.transport == "http":
+                        result["explore"] = browserless_export(
+                            args.data_dir,
+                            formats=export_formats,
+                            browser=args.browser,
+                        )
+                    else:
+                        result["explore"] = capture_explore(
+                            args.data_dir,
+                            formats=export_formats,
+                            profile_dir=args.profile_dir,
+                            headless=args.headless,
+                            login_timeout_seconds=args.login_timeout,
+                            browser=args.browser,
+                            use_saved_cookies=args.use_saved_cookies,
+                        )
+                    should_rebuild = not args.no_build
+                elif args.command == "build":
+                    should_rebuild = True
+                if should_rebuild:
+                    result["output"] = rebuild(
+                        args.data_dir,
+                        formats=formats,
+                        gap_hours=args.trip_gap_hours,
+                        max_speed_kmh=args.max_speed_kmh,
+                        jump_km=args.jump_km,
+                    )
         print(json.dumps(result, indent=2))
     except (RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
