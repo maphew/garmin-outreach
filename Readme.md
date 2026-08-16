@@ -25,7 +25,7 @@ The default output directory is `data/output/`:
 | `garmin-outreach.gpkg` | One QGIS-ready GeoPackage with a layer per data type |
 | `geojson/*.geojson` | Portable GeoJSON files |
 | `shapefile/*.shp` | Shapefiles plus `fields.json`, which records shortened field names |
-| `summary.json` | Feature counts, input counts, parse errors, and written paths |
+| `summary.json` | Feature counts, input counts, parse errors, written paths, and a per-layer `bbox` |
 
 Layers are created when that kind of data exists:
 

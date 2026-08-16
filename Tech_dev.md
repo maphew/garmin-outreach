@@ -100,6 +100,7 @@ The central design choice is that acquisition and conversion are separate. Netwo
 
 ```text
 data/
+├── .writer.lock            # advisory interprocess writer lock; persists between runs; safe to ignore/delete when nothing is running
 ├── mapshare-state.json
 ├── .browser-profile/       # equivalent to an authenticated session; sensitive
 ├── raw/
@@ -114,6 +115,8 @@ data/
 ```
 
 `data/` and `.garmin-outreach/` are ignored. Treat anything already under `data/` as runtime/smoke-test state, not as a checked-in fixture or a source of truth.
+
+Every mutating CLI command (`ingest`, `mapshare`, `explore`, `build`) holds `.writer.lock` for the duration of its work; a concurrent mutating invocation fails fast with exit 2 instead of blocking or interleaving writes. The lock is not reentrant — nested acquisition within the same process also fails fast, with a distinct error message identifying the lock as already held by this process.
 
 ## Feature identity and idempotency
 
@@ -238,7 +241,7 @@ GeoPandas constructs each layer and Pyogrio writes it. GeoPackage creation goes 
 
 Shapefile fields are limited to ten characters. Stable aliases live in `SHAPEFILE_ALIASES`; `shapefile/fields.json` records every original-to-short mapping. Add explicit aliases for new common fields to avoid unstable numeric suffixes.
 
-Only non-empty layers are created. `summary.json` includes feature counts, layer counts, formats, paths, raw input count, and parse errors.
+Only non-empty layers are created. `summary.json` includes feature counts, layer counts, formats, paths, raw input count, parse errors, and a per-layer `bbox` (omitted for a layer whose bounds are non-finite).
 
 ## Verification expectations
 
