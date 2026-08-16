@@ -98,11 +98,16 @@ def write_outputs(
         _replace_directory(target, lambda temp: _write_shapefiles(frames, temp))
         written["shp"] = [str(target / f"{layer}.shp") for layer in frames]
 
+    bbox = {
+        layer: [float(value) for value in frame.total_bounds] for layer, frame in frames.items()
+    }
+
     summary = {
         "feature_count": len(features),
         "layers": dict(sorted(Counter(feature.layer for feature in features).items())),
         "formats": list(formats),
         "written": written,
+        "bbox": bbox,
     }
     _atomic_text(output_dir / "summary.json", json.dumps(summary, indent=2) + "\n")
     return summary
