@@ -21,6 +21,15 @@ from .security import BASELINE_HEADERS
 _STATIC_PACKAGE = "garmin_outreach.serve"
 _STATIC_RESOURCE_NAME = "static"
 
+# Point vs. line rendering hint for map.js, mirrored from docs/spec-serve-ui.md
+# section 6/8 -- kept next to the registry rather than duplicated client-side.
+POINT_LAYERS = frozenset({"track_points", "messages", "waypoints", "events"})
+LINE_LAYERS = frozenset({"tracks", "routes", "courses", "trips"})
+# Every layer in the registry must be classified as exactly point or line --
+# a layer added to LAYERS without updating one of the sets above would
+# otherwise silently fall through to the line-rendering branch below.
+assert set(LAYERS) == POINT_LAYERS | LINE_LAYERS
+
 # Letters, digits, dash, dot only; no separators. Belt-and-braces on top of
 # the route's own inability to match a segment containing "/" (Starlette
 # decodes percent-escapes before matching, so `..%2Fx` and `%2e%2e/` never
@@ -46,6 +55,19 @@ def _freshness_command(state: str) -> str | None:
     return _FRESHNESS_COMMANDS.get(state)
 
 
+def _layer_kind(name: str) -> str:
+    # `capabilities["layers_present"]` normally only ever contains registry
+    # layer names (LAYERS), guaranteed classified by the module-level assert
+    # above -- but it is derived from summary.json, which is untrusted data
+    # (docs/spec-serve-ui.md section 8), so an unrecognized name here must
+    # degrade to a safe default rather than raise.
+    if name in POINT_LAYERS:
+        return "point"
+    if name in LINE_LAYERS:
+        return "line"
+    return "line"
+
+
 def dashboard(request: Request) -> HTMLResponse:
     # Sync handler: `ArtifactStore.shaped_summary()` does blocking file IO,
     # and Starlette runs sync endpoints in a threadpool instead of on the
@@ -65,6 +87,74 @@ def api_summary(request: Request) -> JSONResponse:
     # Sync for the same reason as `dashboard()` above.
     store = request.app.state.artifact_store
     return JSONResponse(store.shaped_summary())
+
+
+def _parse_page(raw: str | None) -> int:
+    """Tolerant page-number parse: missing/non-numeric input -> page 1.
+
+    Out-of-range values (negative, past the last page) are clamped by
+    `ArtifactStore.messages()` itself, not here.
+    """
+    if raw is None:
+        return 1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
+
+
+def messages(request: Request) -> HTMLResponse:
+    # Sync for the same reason as `dashboard()` above.
+    store = request.app.state.artifact_store
+    page = _parse_page(request.query_params.get("page"))
+    data = store.messages(page)
+    template = request.app.state.templates.get_template("messages.html")
+    html = template.render(messages=data)
+    return HTMLResponse(html)
+
+
+def map_view(request: Request) -> HTMLResponse:
+    # Sync for the same reason as `dashboard()` above.
+    store = request.app.state.artifact_store
+    summary = store.shaped_summary()
+    capabilities = summary["capabilities"]
+    layers_config: dict[str, dict] = {}
+    if capabilities["geojson_available"]:
+        for name in capabilities["layers_present"]:
+            layers_config[name] = {
+                "count": summary["layers"].get(name),
+                "bbox": summary["bbox"].get(name),
+                "kind": _layer_kind(name),
+            }
+    map_config = {"layers": layers_config}
+    template = request.app.state.templates.get_template("map.html")
+    html = template.render(
+        summary=summary,
+        map_config=map_config,
+        freshness_command=_freshness_command(summary["freshness"]["state"]),
+    )
+    return HTMLResponse(html)
+
+
+def api_layer_geojson(request: Request) -> Response:
+    # Sync for the same reason as `dashboard()` above.
+    name = request.path_params["name"]
+    error_headers = {"Cache-Control": "no-store"}
+    if name not in LAYERS or "/" in name or "\\" in name or ".." in name:
+        return JSONResponse(
+            {"error": "layer not available"}, status_code=404, headers=error_headers
+        )
+    store = request.app.state.artifact_store
+    data = store.layer_geojson(name)
+    if data is None:
+        return JSONResponse(
+            {"error": "layer not available"}, status_code=404, headers=error_headers
+        )
+    return Response(
+        content=data,
+        media_type="application/geo+json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _read_static_bytes(filename: str) -> bytes | None:
@@ -147,3 +237,40 @@ def discover_datastar_filename() -> str:
     raise RuntimeError(
         f"No vendored datastar-*.js asset found under {_STATIC_PACKAGE}/{_STATIC_RESOURCE_NAME}/"
     )
+
+
+def _discover_static_asset(*, prefix: str, suffix: str, exclude: str | None = None) -> str:
+    """Find a vendored `<prefix>*<suffix>` asset by globbing static/.
+
+    Keeps content-hashed names in one place so a re-vendor never needs a
+    template edit. `exclude`, when given, skips filenames also containing
+    that substring (e.g. so the CSP bundle glob doesn't also match its
+    worker file, whose name shares the same prefix).
+    """
+    static_dir = resources.files(_STATIC_PACKAGE).joinpath(_STATIC_RESOURCE_NAME)
+    for entry in static_dir.iterdir():
+        name = entry.name
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        if exclude is not None and exclude in name:
+            continue
+        return name
+    raise RuntimeError(
+        f"No vendored {prefix}*{suffix} asset found under "
+        f"{_STATIC_PACKAGE}/{_STATIC_RESOURCE_NAME}/"
+    )
+
+
+def discover_maplibre_js_filename() -> str:
+    """Find the vendored CSP-bundle `maplibre-gl-csp-<hash>.js` filename."""
+    return _discover_static_asset(prefix="maplibre-gl-csp-", suffix=".js", exclude="worker")
+
+
+def discover_maplibre_worker_filename() -> str:
+    """Find the vendored `maplibre-gl-csp-worker-<hash>.js` filename."""
+    return _discover_static_asset(prefix="maplibre-gl-csp-worker-", suffix=".js")
+
+
+def discover_maplibre_css_filename() -> str:
+    """Find the vendored `maplibre-gl-<hash>.css` filename."""
+    return _discover_static_asset(prefix="maplibre-gl-", suffix=".css")

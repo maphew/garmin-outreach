@@ -314,7 +314,9 @@ as part of the phases that introduce each surface:
   `script-src 'self'` (+ `'unsafe-eval'` only if pinned Datastar requires it —
   verified during implementation, each relaxation commented);
   `style-src 'self'`; `connect-src 'self'`; `img-src 'self' data: blob:`;
-  `worker-src blob:` (MapLibre CSP bundle); `object-src 'none'`;
+  `worker-src 'self'` (the MapLibre CSP bundle loads its worker from a
+  same-origin URL set via `setWorkerUrl`; the non-CSP build is the one that
+  needs `blob:`); `object-src 'none'`;
   `base-uri 'none'`; `frame-ancestors 'none'`; `form-action 'self'`.
 - **Headers everywhere**: `Cache-Control: no-store` on all HTML/API/error
   responses (immutable caching only on content-hashed static);

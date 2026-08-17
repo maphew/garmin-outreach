@@ -27,9 +27,15 @@ from starlette.routing import Route
 from .artifacts import ArtifactStore
 from .security import ALLOWED_HOSTS, HostAllowlistMiddleware, SecurityHeadersMiddleware
 from .views import (
+    api_layer_geojson,
     api_summary,
     dashboard,
     discover_datastar_filename,
+    discover_maplibre_css_filename,
+    discover_maplibre_js_filename,
+    discover_maplibre_worker_filename,
+    map_view,
+    messages,
     not_found,
     server_error,
     static_asset,
@@ -42,9 +48,11 @@ _BROWSER_OPEN_POLL_SECONDS = 0.05
 def create_app(data_dir: Path) -> Starlette:
     """Build the phase-1 read-only Starlette app over `data_dir`.
 
-    Routes: `GET /` (dashboard), `GET /api/summary` (shaped JSON, never the
-    raw file), `GET /static/{filename}` (vendored assets). Anything else is
-    a friendly 404 (no traceback; `debug=False`).
+    Routes: `GET /` (dashboard), `GET /messages` (paged messages timeline),
+    `GET /map` (MapLibre island + layer toggles), `GET /api/summary` (shaped
+    JSON, never the raw file), `GET /api/layers/{name}.geojson` (allowlisted
+    layer content), `GET /static/{filename}` (vendored assets). Anything else
+    is a friendly 404 (no traceback; `debug=False`).
     """
     artifact_store = ArtifactStore(data_dir)
     templates = jinja2.Environment(
@@ -53,10 +61,20 @@ def create_app(data_dir: Path) -> Starlette:
         undefined=jinja2.StrictUndefined,
     )
     templates.globals["datastar_filename"] = discover_datastar_filename()
+    # Resolved once at app-creation time rather than per-/map-request (the
+    # datastar filename above gets the same treatment): a re-vendor changes
+    # these hashed filenames rarely enough that per-request iterdir() scans
+    # are pure overhead.
+    templates.globals["maplibre_js_filename"] = discover_maplibre_js_filename()
+    templates.globals["maplibre_css_filename"] = discover_maplibre_css_filename()
+    templates.globals["maplibre_worker_filename"] = discover_maplibre_worker_filename()
 
     routes = [
         Route("/", dashboard, methods=["GET"]),
+        Route("/messages", messages, methods=["GET"]),
+        Route("/map", map_view, methods=["GET"]),
         Route("/api/summary", api_summary, methods=["GET"]),
+        Route("/api/layers/{name}.geojson", api_layer_geojson, methods=["GET"]),
         Route("/static/{filename}", static_asset, methods=["GET"]),
     ]
     middleware = [

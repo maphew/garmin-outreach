@@ -21,13 +21,18 @@ ALLOWED_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost", "::1")
 # serve/static/datastar-2837d87a.js for `Function(`), so script-src needs
 # 'unsafe-eval'. Every other directive stays maximally restrictive; this is
 # the single test-locked header string (docs/spec-serve-ui.md section 8).
+#
+# worker-src: the vendored MapLibre CSP bundle loads its worker from a
+# same-origin URL via `maplibregl.setWorkerUrl(...)` -- that's the whole
+# point of the CSP build (verified live in Chromium). `blob:` is only needed
+# by the *non-CSP* MapLibre build, which is not what's vendored here.
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; "
     "script-src 'self' 'unsafe-eval'; "
     "style-src 'self'; "
     "connect-src 'self'; "
     "img-src 'self' data: blob:; "
-    "worker-src blob:; "
+    "worker-src 'self'; "
     "object-src 'none'; "
     "base-uri 'none'; "
     "frame-ancestors 'none'; "

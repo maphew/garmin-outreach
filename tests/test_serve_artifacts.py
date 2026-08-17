@@ -3,7 +3,11 @@ import math
 import os
 from pathlib import Path
 
+from garmin_outreach.exporters import write_outputs
+from garmin_outreach.parsers import parse_file
 from garmin_outreach.serve.artifacts import LAYERS, ArtifactStore
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -347,14 +351,49 @@ def test_layer_geojson_filters_forbidden_properties(tmp_path):
         "longitude",
         scary_path,
         "300434065012340",
+        "feature_id",
+        "m1",
     ):
         assert forbidden not in text
 
-    for allowed in ("feature_id", "m1", "text", "hello", "timestamp_utc", "device_name", "unit-1"):
+    for allowed in ("text", "hello", "timestamp_utc", "device_name", "unit-1"):
         assert allowed in text
 
     parsed = json.loads(text)
     assert parsed["features"][0]["geometry"] == {"type": "Point", "coordinates": [1.0, 2.0]}
+
+
+def test_layer_geojson_drops_unlisted_top_level_and_feature_keys(tmp_path):
+    path = _layer_path(tmp_path, "waypoints")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "type": "FeatureCollection",
+        "metadata": {"generator": "some-future-exporter"},
+        "features": [
+            {
+                "type": "Feature",
+                "id": "keep-me",
+                "provenance": {"source": "leaky"},
+                "geometry": None,
+                "properties": {"name": "wp1"},
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    store = ArtifactStore(tmp_path)
+    result = store.layer_geojson("waypoints")
+    assert result is not None
+    text = result.decode("utf-8")
+    assert "metadata" not in text
+    assert "generator" not in text
+    assert "provenance" not in text
+    assert "leaky" not in text
+
+    parsed = json.loads(text)
+    assert set(parsed.keys()) == {"type", "features"}
+    feature = parsed["features"][0]
+    assert set(feature.keys()) == {"type", "id", "geometry", "properties"}
+    assert feature["id"] == "keep-me"
 
 
 def test_layer_geojson_missing_properties_tolerated(tmp_path):
@@ -406,6 +445,28 @@ def test_layer_geojson_torn_json_returns_none(tmp_path):
     path.write_bytes(b'{"type": "FeatureCollection", "features": [')
     store = ArtifactStore(tmp_path)
     assert store.layer_geojson("routes") is None
+
+
+def test_layer_geojson_real_pipeline_output_never_leaks_garmin_id(tmp_path):
+    # End-to-end regression for the feature_id leak (docs/spec-serve-ui.md
+    # section 8): drive the real parser/exporter over a real fixture, then
+    # confirm the raw garmin_id embedded in Feature.stable_id() (e.g.
+    # "garmin:1002:0") never survives the HTTP-facing filter.
+    features = parse_file(_FIXTURES_DIR / "mapshare.kml")
+    output_dir = tmp_path / "output"
+    write_outputs(features, output_dir, formats=("geojson",))
+
+    store = ArtifactStore(tmp_path)
+
+    messages_body = store.layer_geojson("messages")
+    assert messages_body is not None
+    assert b"garmin:" not in messages_body
+    assert b"Everything is fine." in messages_body
+
+    track_points_body = store.layer_geojson("track_points")
+    assert track_points_body is not None
+    assert b"garmin:" not in track_points_body
+    assert b"Test User" in track_points_body
 
 
 def test_layer_geojson_unknown_name_returns_none(tmp_path):
@@ -563,6 +624,22 @@ def test_messages_mixed_timestamp_offset_formats_order_correctly(tmp_path):
     result = store.messages(page=1)
     ids = [entry["id"] for entry in result["entries"]]
     assert ids == ["explicit_offset", "z_suffix", "naive"]
+
+
+def test_messages_unparseable_timestamp_normalized_to_none(tmp_path):
+    features = [
+        _message_feature("dated", "2026-08-01T00:00:00Z"),
+        _message_feature("garbage", "not-a-date"),
+        _message_feature("empty", ""),
+    ]
+    _write_geojson_features(_layer_path(tmp_path, "messages"), features)
+    store = ArtifactStore(tmp_path)
+    result = store.messages(page=1)
+    entries_by_id = {entry["id"]: entry for entry in result["entries"]}
+    assert entries_by_id["garbage"]["timestamp_utc"] is None
+    assert entries_by_id["empty"]["timestamp_utc"] is None
+    assert entries_by_id["dated"]["timestamp_utc"] == "2026-08-01T00:00:00Z"
+    assert result["undated"] == 2
 
 
 def test_messages_cache_invalidates_on_rewrite(tmp_path):

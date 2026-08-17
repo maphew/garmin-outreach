@@ -26,3 +26,30 @@ code {
 section {
   margin-bottom: 1.5rem;
 }
+
+#map-layout {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+#map {
+  height: 60vh;
+  min-height: 24rem;
+  flex: 1 1 30rem;
+}
+
+#layer-toggle-panel {
+  flex: 0 0 14rem;
+}
+
+@media (max-width: 40rem) {
+  #map-layout {
+    flex-direction: column;
+  }
+
+  #layer-toggle-panel {
+    flex: 1 1 auto;
+  }
+}

@@ -38,6 +38,8 @@ bump always changes the URL and immutable cache headers stay safe.
 
 ## Update procedure
 
+### Datastar
+
 1. Bump `datastar-py` in `pyproject.toml` (both the `ui` extra and the `dev`
    group), run `uv lock`.
 2. Download the matching `bundles/datastar.js` for the same tag, compute its
@@ -46,3 +48,17 @@ bump always changes the URL and immutable cache headers stay safe.
    LICENSE-datastar.md from the same tag.
 4. Run the test suite: the version-agreement and static-serving tests fail on
    any mismatch.
+
+### MapLibre GL JS
+
+1. Pick the new `maplibre-gl` tag (see the version note above for the 5.x vs.
+   6.x/ESM-only caveat).
+2. Download `dist/maplibre-gl-csp.js`, `dist/maplibre-gl-csp-worker.js`, and
+   `dist/maplibre-gl.css` for that tag from unpkg.
+3. Compute each file's SHA-256, rename it to `<prefix>-<first8>.<ext>`
+   (`maplibre-gl-csp-<hash>.js`, `maplibre-gl-csp-worker-<hash>.js`,
+   `maplibre-gl-<hash>.css`), and delete the three old files.
+4. Update this file (version, URLs, all three SHA-256 hashes, retrieval
+   date) and refresh LICENSE-maplibre.txt from the same tag.
+5. Run the test suite: the vendored-asset pin tests and static-serving tests
+   fail on any mismatch.

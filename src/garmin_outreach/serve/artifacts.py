@@ -32,9 +32,11 @@ LAYERS: tuple[str, ...] = (
 # Fields safe to expose on the HTTP surface. Never: source_file, source_kind,
 # imei, extra_json, garmin_id, incident_id, map_display_name, latitude,
 # longitude (geometry carries position) -- see docs/spec-serve-ui.md section 8.
+# Also never: feature_id -- `Feature.stable_id()` embeds the raw garmin_id
+# (e.g. "garmin:1002:0") whenever the parser supplied one, which is exactly
+# the kind of identifier this allowlist otherwise forbids re-exposing.
 PROPERTY_ALLOWLIST: frozenset[str] = frozenset(
     {
-        "feature_id",
         "name",
         "timestamp_utc",
         "device_name",
@@ -53,6 +55,20 @@ PROPERTY_ALLOWLIST: frozenset[str] = frozenset(
         "distance_km",
     }
 )
+
+# Top-level GeoJSON members kept as-is when filtering a layer file;
+# everything else (e.g. a future exporter adding "metadata") is dropped
+# rather than passed through.
+_TOP_LEVEL_GEOJSON_ALLOWLIST: frozenset[str] = frozenset({"type", "name", "crs", "bbox"})
+
+# Per-feature members kept as-is. "id" is included deliberately: the
+# pipeline's GeoJSON writer (pyogrio's GeoJSON driver, always called with a
+# fresh unnamed index -- see exporters.write_outputs) never emits an OGC
+# "id" member in real output (verified against tests/fixtures/mapshare.kml),
+# so it never carries the garmin-embedding stable id that
+# properties["feature_id"] would. If a future exporter change starts setting
+# "id" from stable_id(), drop it from this set too.
+_FEATURE_GEOJSON_ALLOWLIST: frozenset[str] = frozenset({"type", "id", "geometry", "properties"})
 
 _RETRY_DELAY_SECONDS = 0.05
 _STALE_SCAN_CACHE_SECONDS = 5.0
@@ -112,6 +128,9 @@ def _stat_key(path: Path) -> tuple[int, int] | None:
     return None
 
 
+# per_page is not currently reachable from HTTP -- views.messages() always
+# calls ArtifactStore.messages() with the default, so this clamp only
+# guards direct/future callers (phase B may add a ?per_page= query param).
 def _clamp_per_page(value: int) -> int:
     try:
         parsed = int(value)
@@ -131,15 +150,11 @@ def _parse_timestamp(value: object) -> datetime | None:
     if not text:
         return None
     try:
+        # Python 3.11+ (requires-python >=3.11) accepts a "Z" UTC suffix
+        # natively, so no manual "Z" -> "+00:00" rewrite is needed here.
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        if text.endswith(("Z", "z")):
-            try:
-                parsed = datetime.fromisoformat(text[:-1] + "+00:00")
-            except ValueError:
-                return None
-        else:
-            return None
+        return None
     if parsed.tzinfo is None:
         # Assume naive timestamps are UTC so they compare safely against
         # timezone-aware ones instead of raising.
@@ -240,12 +255,16 @@ class ArtifactStore:
             properties = feature.get("properties")
             if not isinstance(properties, dict):
                 properties = {}
-            filtered_feature = dict(feature)
+            filtered_feature = {
+                key: value for key, value in feature.items() if key in _FEATURE_GEOJSON_ALLOWLIST
+            }
             filtered_feature["properties"] = {
                 key: value for key, value in properties.items() if key in PROPERTY_ALLOWLIST
             }
             filtered_features.append(filtered_feature)
-        result = dict(parsed)
+        result = {
+            key: value for key, value in parsed.items() if key in _TOP_LEVEL_GEOJSON_ALLOWLIST
+        }
         result["features"] = filtered_features
         return result
 
@@ -318,6 +337,13 @@ class ArtifactStore:
             timestamp_utc = properties.get("timestamp_utc")
             if not isinstance(timestamp_utc, str):
                 timestamp_utc = None
+            parsed_ts = _parse_timestamp(timestamp_utc)
+            # An unparseable string (garbage, empty) is undated the same as a
+            # missing field -- keeping the raw string here would put it above
+            # the /messages template's "Undated" label while still counting
+            # toward the undated total, which the template keys off `is none`.
+            if parsed_ts is None:
+                timestamp_utc = None
             entry = {
                 "id": entry_id,
                 "text": properties.get("text") if isinstance(properties.get("text"), str) else None,
@@ -329,7 +355,6 @@ class ArtifactStore:
                 if isinstance(properties.get("device_name"), str)
                 else None,
             }
-            parsed_ts = _parse_timestamp(timestamp_utc)
             if parsed_ts is None:
                 undated += 1
             items.append((entry, parsed_ts))

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Map - garmin-outreach{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/{{ maplibre_css_filename }}">
+{% endblock %}
+{% block content %}
+<section>
+  <h2>Map</h2>
+  {% if summary["capabilities"]["geojson_available"] %}
+  <div id="map-layout">
+    <div id="map" data-worker-url="/static/{{ maplibre_worker_filename }}"></div>
+    <aside id="layer-toggle-panel">
+      <h3>Layers</h3>
+      <ul>
+        {% for name, info in map_config["layers"].items() %}
+        <li>
+          <label>
+            <input type="checkbox" class="layer-toggle" data-layer="{{ name }}" checked>
+            {{ name }} ({{ info["count"] if info["count"] is not none else "no data" }})
+          </label>
+        </li>
+        {% endfor %}
+      </ul>
+    </aside>
+  </div>
+  <script type="application/json" id="map-config">{{ map_config | tojson }}</script>
+  <script src="/static/{{ maplibre_js_filename }}"></script>
+  <script src="/static/map.js"></script>
+  {% else %}
+  <p>
+    GeoJSON exports are not available. Run
+    <code>garmin-outreach build --formats geojson</code>
+    (or the default formats, which include geojson) to enable them.
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

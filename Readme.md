@@ -153,6 +153,8 @@ uv run garmin-outreach serve
 This opens `http://127.0.0.1:8477` in your browser. The server binds to loopback only by design
 (no remote access) and is read-only in this phase: it never rebuilds and never takes the writer
 lock, so run `garmin-outreach build` first (or alongside it) to refresh what the dashboard shows.
+Phase 2 adds a paged messages timeline (`/messages`) and an offline map (`/map`, vendored
+MapLibre, no external tile requests).
 
 ## Automation example
 
