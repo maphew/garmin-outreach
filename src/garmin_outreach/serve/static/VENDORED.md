@@ -15,6 +15,27 @@ bump always changes the URL and immutable cache headers stay safe.
   https://raw.githubusercontent.com/starfederation/datastar/v1.0.2/LICENSE.md)
 - Retrieved: 2026-08-16
 
+## maplibre-gl-csp-a1f1847b.js, maplibre-gl-csp-worker-f950e7b1.js, maplibre-gl-ab1e70d5.css
+
+- Project: MapLibre GL JS (https://maplibre.org)
+- Version: 5.24.0 (the CSP bundle; MapLibre 6.x is ESM-only and no longer
+  ships `maplibre-gl-csp*.js`, so 5.x is a deliberate choice — revisit when
+  adopting an ESM loading strategy)
+- Source URLs:
+  - https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl-csp.js
+  - https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl-csp-worker.js
+  - https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css
+- SHA-256:
+  - maplibre-gl-csp-a1f1847b.js: a1f1847bac64aa00acbf80fbb79b2c5af24d8eecaaa5e2ad14080fab81f1de95
+  - maplibre-gl-csp-worker-f950e7b1.js: f950e7b15c49c8b9c7bb52136df2a2df2f6f03b83b8927774573fc98b067f7f0
+  - maplibre-gl-ab1e70d5.css: ab1e70d59ec40465bae7e7030da2f3ccf28133fd502e62bd598eefbadfd7a732
+- License: BSD-3-Clause (see LICENSE-maplibre.txt, from
+  https://unpkg.com/maplibre-gl@5.24.0/dist/LICENSE.txt)
+- Retrieved: 2026-08-16
+- The worker URL is set explicitly at map init
+  (`maplibregl.setWorkerUrl("/static/maplibre-gl-csp-worker-f950e7b1.js")`),
+  which is what the CSP bundle exists for.
+
 ## Update procedure
 
 1. Bump `datastar-py` in `pyproject.toml` (both the `ui` extra and the `dev`
