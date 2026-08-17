@@ -310,6 +310,33 @@ def test_capabilities_and_layer_hidden_when_current_summary_formats_excludes_geo
     assert store.layer_geojson("messages") is None
 
 
+def test_messages_hidden_when_current_summary_formats_excludes_geojson(tmp_path):
+    # Same stale-directory case as above: a leftover messages.geojson from a
+    # previous geojson build must not feed /messages when the current build
+    # excluded geojson.
+    geojson_dir = tmp_path / "output" / "geojson"
+    geojson_dir.mkdir(parents=True)
+    (geojson_dir / "messages.geojson").write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    _message_feature("m1", text="stale", timestamp_utc="2026-08-01T00:00:00Z")
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        tmp_path / "output" / "summary.json",
+        {"layers": {"messages": 1}, "formats": ["gpkg"]},
+    )
+    store = ArtifactStore(tmp_path)
+    listing = store.messages(1)
+    assert listing["total"] == 0
+    assert listing["entries"] == []
+
+
 def test_capabilities_and_layer_present_when_current_summary_formats_includes_geojson(tmp_path):
     geojson_dir = tmp_path / "output" / "geojson"
     geojson_dir.mkdir(parents=True)

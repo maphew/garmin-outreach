@@ -312,6 +312,13 @@ class ArtifactStore:
         }
 
     def _message_entries(self) -> tuple[list[dict], int]:
+        summary_path = self.data_dir / "output" / "summary.json"
+        raw_summary, _summary_mtime, _summary_present = self._read_summary(summary_path)
+        if self._formats_exclude_geojson(raw_summary):
+            # Same stale-directory gate as layer_geojson(): a leftover
+            # messages.geojson from a previous geojson build must not feed
+            # the timeline when the current build excluded geojson.
+            return [], 0
         path = self.data_dir / "output" / "geojson" / "messages.geojson"
         stat_key = _stat_key(path)
         if stat_key is None:

@@ -151,10 +151,13 @@ uv run garmin-outreach serve
 ```
 
 This opens `http://127.0.0.1:8477` in your browser. The server binds to loopback only by design
-(no remote access) and is read-only in this phase: it never rebuilds and never takes the writer
-lock, so run `garmin-outreach build` first (or alongside it) to refresh what the dashboard shows.
-Phase 2 adds a paged messages timeline (`/messages`) and an offline map (`/map`, vendored
-MapLibre, no external tile requests).
+(no remote access). The dashboard shows freshness and layer counts, `/messages` is a paged
+messages timeline, and `/map` is an offline map (vendored MapLibre, no external tile requests).
+The dashboard's Jobs buttons can trigger `build`, `mapshare`, and `explore` runs; those jobs
+acquire the same `data/` writer lock as the CLI, so a job and a terminal command cannot
+interleave writes (whichever starts second fails fast). Reading pages never mutates `data/`;
+only the Jobs buttons do. Job progress streams live to the dashboard; closing the server
+(Ctrl-C) abandons in-flight network work.
 
 ## Automation example
 
