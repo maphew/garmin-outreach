@@ -71,6 +71,12 @@ _FRESHNESS_COMMANDS = {
     "freshness_unknown": "garmin-outreach build",
 }
 
+# Job states that end a job for good (jobs.py's `_Job.state`, set once in
+# `JobRunner._run`'s completion block). A "job" SSE event carrying one of
+# these must invalidate `ArtifactStore._raw_scan_cache` before the
+# `#summary-live` patch is rendered -- see `api_events` below.
+_TERMINAL_JOB_STATES = frozenset({"succeeded", "partial_success", "failed"})
+
 
 def _freshness_command(state: str) -> str | None:
     return _FRESHNESS_COMMANDS.get(state)
@@ -425,6 +431,17 @@ async def api_events(request: Request) -> Response:
                     continue
                 yield ServerSentEventGenerator.patch_elements(_render_job_status_html(request))
                 if event.get("type") == "job":
+                    snapshot = event.get("snapshot")
+                    state = snapshot.get("state") if isinstance(snapshot, dict) else None
+                    if state in _TERMINAL_JOB_STATES:
+                        # Force a rescan of raw/ instead of trusting the ~5s
+                        # cache: a job-start event usually populated it
+                        # before this job acquired anything, and a job that
+                        # archives new raw data but fails its rebuild within
+                        # that window must not have its completion patch
+                        # reuse the pre-job cached value (no later event
+                        # would ever correct it).
+                        request.app.state.artifact_store.invalidate_raw_scan_cache()
                     # Blocking file IO (same as `dashboard()`'s own
                     # `shaped_summary()` call) -- off the loop via
                     # `to_thread` since, unlike a sync route handler,

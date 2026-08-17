@@ -33,7 +33,10 @@ ui = [
   "starlette>=0.40,<1",
   "uvicorn>=0.30,<1",
   "jinja2>=3.1,<4",
-  "datastar-py>=1.0.2,<2",
+  # Exact pin: the vendored JS under src/garmin_outreach/serve/static/ must
+  # match this SDK version exactly -- bump both together, see
+  # src/garmin_outreach/serve/static/VENDORED.md.
+  "datastar-py==1.0.2",
 ]
 
 [dependency-groups]
@@ -43,7 +46,10 @@ dev = [
   "starlette>=0.40,<1",
   "uvicorn>=0.30,<1",
   "jinja2>=3.1,<4",
-  "datastar-py>=1.0.2,<2",
+  # Exact pin: the vendored JS under src/garmin_outreach/serve/static/ must
+  # match this SDK version exactly -- bump both together, see
+  # src/garmin_outreach/serve/static/VENDORED.md.
+  "datastar-py==1.0.2",
 ]
 
 [project.scripts]

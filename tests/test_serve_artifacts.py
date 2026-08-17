@@ -221,6 +221,31 @@ def test_staleness_ok_when_raw_dir_absent(tmp_path):
     assert shaped["freshness"]["state"] == "ok"
 
 
+def test_raw_scan_cache_invalidation_forces_rescan(tmp_path):
+    # The ~5s raw-scan cache can make a completion patch render freshness
+    # "ok" instead of "outputs_stale" if a newer raw file appeared within
+    # the cache window (e.g. a job that archived data then failed its
+    # rebuild) -- `invalidate_raw_scan_cache()` is the caller's escape
+    # hatch, exercised end-to-end over the SSE path in test_serve_events.py.
+    summary_path = tmp_path / "output" / "summary.json"
+    _write_json(summary_path, {"layers": {"messages": 1}})
+    os.utime(summary_path, (1_700_000_000, 1_700_000_000))
+
+    store = ArtifactStore(tmp_path)
+    shaped = store.shaped_summary()
+    assert shaped["freshness"]["state"] == "ok"
+
+    # A newer raw file appears -- still within the cache window, so a
+    # second read reuses the now-stale cached scan result.
+    _touch(tmp_path / "raw" / "imports" / "a.kml", 1_700_000_500)
+    still_cached = store.shaped_summary()
+    assert still_cached["freshness"]["state"] == "ok"
+
+    store.invalidate_raw_scan_cache()
+    after_invalidate = store.shaped_summary()
+    assert after_invalidate["freshness"]["state"] == "outputs_stale"
+
+
 def test_mapshare_last_success_utc_present_and_independent_of_state(tmp_path):
     _write_json(
         tmp_path / "mapshare-state.json",
@@ -263,6 +288,60 @@ def test_capabilities_without_geojson_dir(tmp_path):
     store = ArtifactStore(tmp_path)
     shaped = store.shaped_summary()
     assert shaped["capabilities"] == {"geojson_available": False, "layers_present": []}
+
+
+def test_capabilities_and_layer_hidden_when_current_summary_formats_excludes_geojson(tmp_path):
+    # The exporter leaves a previous build's `output/geojson/` dir in place
+    # even when the *current* build ran with e.g. `--formats gpkg`; the
+    # adapter must not serve that leftover directory's data against the
+    # current summary's counts.
+    geojson_dir = tmp_path / "output" / "geojson"
+    geojson_dir.mkdir(parents=True)
+    (geojson_dir / "messages.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8"
+    )
+    _write_json(
+        tmp_path / "output" / "summary.json",
+        {"layers": {"messages": 1}, "formats": ["gpkg"]},
+    )
+    store = ArtifactStore(tmp_path)
+    shaped = store.shaped_summary()
+    assert shaped["capabilities"] == {"geojson_available": False, "layers_present": []}
+    assert store.layer_geojson("messages") is None
+
+
+def test_capabilities_and_layer_present_when_current_summary_formats_includes_geojson(tmp_path):
+    geojson_dir = tmp_path / "output" / "geojson"
+    geojson_dir.mkdir(parents=True)
+    (geojson_dir / "messages.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8"
+    )
+    _write_json(
+        tmp_path / "output" / "summary.json",
+        {"layers": {"messages": 1}, "formats": ["gpkg", "geojson"]},
+    )
+    store = ArtifactStore(tmp_path)
+    shaped = store.shaped_summary()
+    assert shaped["capabilities"] == {"geojson_available": True, "layers_present": ["messages"]}
+    assert store.layer_geojson("messages") is not None
+
+
+def test_capabilities_directory_behavior_preserved_when_summary_malformed(tmp_path):
+    # No usable "formats" field (missing, or the summary itself is
+    # unparsable) must fall through to the tolerant directory-existence
+    # default rather than hide a layer that is actually present.
+    geojson_dir = tmp_path / "output" / "geojson"
+    geojson_dir.mkdir(parents=True)
+    (geojson_dir / "messages.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8"
+    )
+    summary_path = tmp_path / "output" / "summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_bytes(b'{"layers": {"messages": 1')
+    store = ArtifactStore(tmp_path)
+    shaped = store.shaped_summary()
+    assert shaped["capabilities"] == {"geojson_available": True, "layers_present": ["messages"]}
+    assert store.layer_geojson("messages") is not None
 
 
 def test_unknown_layer_names_dropped_from_shaped_layers(tmp_path):

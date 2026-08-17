@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import importlib.resources as resources
 import json
+import os
 import socket
 import threading
 import time
@@ -312,6 +313,77 @@ def test_job_event_patches_summary_live_with_fresh_summary(
                     summary_frame = frame
 
             assert "marker-999999" in summary_frame
+
+    _run(scenario())
+
+
+def test_completion_patch_reflects_raw_scan_cache_invalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ArtifactStore._raw_scan_cache` is short-lived (~5s), but long enough
+    for a job-start event's `#summary-live` render to cache a "no new raw
+    data yet" scan result. If that same job then archives raw data and
+    fails its rebuild within the window, the completion patch must not
+    reuse that stale cached value -- `api_events` calls
+    `invalidate_raw_scan_cache()` first, per artifacts.py/views.py."""
+    summary_path = tmp_path / "output" / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(json.dumps({"layers": {"messages": 1}}), encoding="utf-8")
+    os.utime(summary_path, (1_700_000_000, 1_700_000_000))
+
+    job_started = threading.Event()
+
+    def _stub(*args, **kwargs):
+        job_started.set()
+        # Simulate "data acquired and archived; rebuild failed" within the
+        # cache window: a raw file newer than summary.json appears, then
+        # the job raises.
+        raw_path = tmp_path / "raw" / "imports" / "a.kml"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(b"x")
+        raise RuntimeError("rebuild failed after data was archived")
+
+    monkeypatch.setattr(services_module, "run_build", _stub)
+
+    async def scenario() -> None:
+        app = create_app(tmp_path)
+        await _start_app(app)
+        store = app.state.artifact_store
+
+        # Populate the cache deterministically the way a job-start event's
+        # own #summary-live render normally would, before any raw data has
+        # been acquired -- avoids depending on exactly how the job-start
+        # event and the worker thread happen to race in this test.
+        pre_job = store.shaped_summary()
+        assert pre_job["freshness"]["state"] == "ok"
+
+        async with _SSEStream(app) as stream:
+            await stream.wait_for_start()
+            await stream.read_frame()  # initial connect snapshot (#job-status)
+
+            runner = app.state.job_runner
+            accepted, _snapshot = runner.start("build", formats=("gpkg",))
+            assert accepted
+            assert job_started.wait(timeout=5)
+
+            # The #summary-live patch immediately following the #job-status
+            # patch that reports "failed" belongs to the completion event
+            # (views.py's `_stream()` always yields that pair back-to-back
+            # for a "job" event) -- read forward until that pair is found.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5
+            failed_status_seen = False
+            summary_frame = None
+            while summary_frame is None:
+                if loop.time() > deadline:
+                    raise AssertionError("no post-completion #summary-live patch ever arrived")
+                frame = await stream.read_frame(timeout=5.0)
+                if failed_status_seen and 'id="summary-live"' in frame:
+                    summary_frame = frame
+                elif 'id="job-status"' in frame and "failed" in frame:
+                    failed_status_seen = True
+
+            assert "outputs_stale" in summary_frame
 
     _run(scenario())
 

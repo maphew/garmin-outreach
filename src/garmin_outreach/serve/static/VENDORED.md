@@ -40,8 +40,9 @@ bump always changes the URL and immutable cache headers stay safe.
 
 ### Datastar
 
-1. Bump `datastar-py` in `pyproject.toml` (both the `ui` extra and the `dev`
-   group), run `uv lock`.
+1. Bump the exact `datastar-py==<version>` pin in `pyproject.toml` (both the
+   `ui` extra and the `dev` group -- always in lockstep with the vendored JS
+   below), run `uv lock`.
 2. Download the matching `bundles/datastar.js` for the same tag, compute its
    SHA-256, and save it as `datastar-<first8>.js`; delete the old file.
 3. Update this file (version, URL, SHA-256, retrieval date) and refresh

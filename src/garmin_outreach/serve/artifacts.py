@@ -200,6 +200,16 @@ class ArtifactStore:
     def layer_geojson(self, name: str) -> bytes | None:
         if name not in LAYERS or "/" in name or "\\" in name:
             return None
+        summary_path = self.data_dir / "output" / "summary.json"
+        raw_summary, _summary_mtime, _summary_present = self._read_summary(summary_path)
+        if self._formats_exclude_geojson(raw_summary):
+            # The exporter leaves a previous build's `output/geojson/` dir in
+            # place even when the *current* summary was built with e.g.
+            # `--formats gpkg` -- without this gate a stale directory would
+            # keep serving a previous build's layer data against the current
+            # summary's counts. Malformed/missing summaries fall through to
+            # the tolerant directory-existence behavior below (unchanged).
+            return None
         geojson_dir = self.data_dir / "output" / "geojson"
         try:
             resolved_dir = geojson_dir.resolve()
@@ -384,7 +394,7 @@ class ArtifactStore:
             "bbox": self._shaped_bbox(raw_summary),
             "input_files": self._shaped_input_files(raw_summary),
             "parse_errors": self._shaped_parse_errors(raw_summary),
-            "capabilities": self._capabilities(),
+            "capabilities": self._capabilities(raw_summary),
             "freshness": self._freshness(raw_summary, summary_mtime, summary_present),
         }
 
@@ -448,7 +458,29 @@ class ArtifactStore:
         entries = [_sanitize_parse_error(entry) for entry in raw_errors]
         return {"count": len(raw_errors), "entries": entries}
 
-    def _capabilities(self) -> dict:
+    def _formats_exclude_geojson(self, raw_summary: object) -> bool:
+        """True when the current summary explicitly names its build formats
+        and geojson is not among them.
+
+        The exporter's `_replace_directory()` leaves a previous build's
+        `output/geojson/` dir in place even when the current build ran with
+        e.g. `--formats gpkg` (pre-existing exporter behavior); this adapter
+        must not then serve that leftover directory's data against the
+        current summary's counts. A missing/malformed summary, or one with
+        no usable `"formats"` list, falls through to the tolerant
+        directory-existence default (`False` here) -- unchanged from before
+        this gate existed.
+        """
+        if not isinstance(raw_summary, dict):
+            return False
+        formats = raw_summary.get("formats")
+        if not isinstance(formats, list):
+            return False
+        return "geojson" not in formats
+
+    def _capabilities(self, raw_summary: object) -> dict:
+        if self._formats_exclude_geojson(raw_summary):
+            return {"geojson_available": False, "layers_present": []}
         geojson_dir = self.data_dir / "output" / "geojson"
         available = geojson_dir.is_dir()
         present = []
@@ -486,6 +518,20 @@ class ArtifactStore:
         else:
             state = "ok"
         return {"state": state, "mapshare_last_success_utc": mapshare_last_success_utc}
+
+    def invalidate_raw_scan_cache(self) -> None:
+        """Force the next `_raw_max_mtime()` call to rescan `raw/` from disk.
+
+        A job-start event usually populates `_raw_scan_cache` before the job
+        has acquired anything; if the job then archives new raw data but
+        fails its rebuild within the ~5s cache window, a completion patch
+        rendered from the stale cached value would report freshness "ok"
+        instead of "outputs_stale", and nothing would ever correct it (no
+        later event re-renders `#summary-live`). Callers render a terminal
+        job event's summary patch after calling this so that render always
+        rescans (docs/spec-serve-ui.md section 7 Phase B).
+        """
+        self._raw_scan_cache = None
 
     def _raw_max_mtime(self) -> float | None:
         now = time.monotonic()

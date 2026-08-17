@@ -109,7 +109,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datastar-py", marker = "extra == 'ui'", specifier = ">=1.0.2,<2" },
+    { name = "datastar-py", marker = "extra == 'ui'", specifier = "==1.0.2" },
     { name = "defusedxml", specifier = ">=0.7.1,<1" },
     { name = "geopandas", specifier = ">=1.0,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },
@@ -124,7 +124,7 @@ provides-extras = ["browser", "ui"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "datastar-py", specifier = ">=1.0.2,<2" },
+    { name = "datastar-py", specifier = "==1.0.2" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.9,<1" },
