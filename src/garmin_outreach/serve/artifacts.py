@@ -15,6 +15,7 @@ import json
 import math
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 LAYERS: tuple[str, ...] = (
@@ -28,9 +29,37 @@ LAYERS: tuple[str, ...] = (
     "trips",
 )
 
+# Fields safe to expose on the HTTP surface. Never: source_file, source_kind,
+# imei, extra_json, garmin_id, incident_id, map_display_name, latitude,
+# longitude (geometry carries position) -- see docs/spec-serve-ui.md section 8.
+PROPERTY_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "feature_id",
+        "name",
+        "timestamp_utc",
+        "device_name",
+        "device_type",
+        "event",
+        "text",
+        "elevation_m",
+        "velocity_kmh",
+        "course_deg",
+        "valid_gps_fix",
+        "in_emergency",
+        "point_count",
+        "start_time_utc",
+        "end_time_utc",
+        "split_reason",
+        "distance_km",
+    }
+)
+
 _RETRY_DELAY_SECONDS = 0.05
 _STALE_SCAN_CACHE_SECONDS = 5.0
 _PARSE_ERROR_SEPARATOR = ": "
+_DEFAULT_PER_PAGE = 50
+_MIN_PER_PAGE = 1
+_MAX_PER_PAGE = 500
 
 
 def _read_bytes(path: Path) -> bytes | None:
@@ -65,6 +94,68 @@ def _stat_mtime(path: Path) -> float | None:
     return None
 
 
+def _stat_key(path: Path) -> tuple[int, int] | None:
+    """Cheap cache-invalidation key: (mtime_ns, size). Not a content hash --
+    good enough to detect the append-only/replace-directory rewrite patterns
+    this module already tolerates elsewhere."""
+    for attempt in range(2):
+        try:
+            stat = path.stat()
+            return (stat.st_mtime_ns, stat.st_size)
+        except (FileNotFoundError, PermissionError):
+            if attempt == 0 and path.parent.is_dir():
+                time.sleep(_RETRY_DELAY_SECONDS)
+                continue
+            return None
+        except OSError:
+            return None
+    return None
+
+
+def _clamp_per_page(value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_PER_PAGE
+    if parsed < _MIN_PER_PAGE:
+        return _MIN_PER_PAGE
+    if parsed > _MAX_PER_PAGE:
+        return _MAX_PER_PAGE
+    return parsed
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        if text.endswith(("Z", "z")):
+            try:
+                parsed = datetime.fromisoformat(text[:-1] + "+00:00")
+            except ValueError:
+                return None
+        else:
+            return None
+    if parsed.tzinfo is None:
+        # Assume naive timestamps are UTC so they compare safely against
+        # timezone-aware ones instead of raising.
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _entry_sort_key(item: tuple[dict, datetime | None]) -> tuple[int, float, str]:
+    entry, parsed_ts = item
+    tiebreak = str(entry["id"])
+    if parsed_ts is None:
+        # Undated bucket sorts after every dated entry, ordered by id.
+        return (1, 0.0, tiebreak)
+    return (0, -parsed_ts.timestamp(), tiebreak)
+
+
 def _basename(path_text: str) -> str:
     stripped = path_text.strip()
     if "://" in stripped:
@@ -88,6 +179,164 @@ class ArtifactStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir).resolve()
         self._raw_scan_cache: tuple[float, float | None] | None = None
+        self._layer_geojson_cache: dict[str, tuple[tuple[int, int], bytes]] = {}
+        self._messages_cache: tuple[tuple[int, int], list[dict], int] | None = None
+
+    def layer_geojson(self, name: str) -> bytes | None:
+        if name not in LAYERS or "/" in name or "\\" in name:
+            return None
+        geojson_dir = self.data_dir / "output" / "geojson"
+        try:
+            resolved_dir = geojson_dir.resolve()
+            candidate = (geojson_dir / f"{name}.geojson").resolve()
+        except OSError:
+            return None
+        if not candidate.is_relative_to(resolved_dir):
+            return None
+        try:
+            return self._layer_geojson(name, candidate)
+        except Exception:
+            return None
+
+    def _layer_geojson(self, name: str, path: Path) -> bytes | None:
+        stat_key = _stat_key(path)
+        if stat_key is None:
+            return None
+        cached = self._layer_geojson_cache.get(name)
+        if cached is not None and cached[0] == stat_key:
+            return cached[1]
+        data = _read_bytes(path)
+        if data is None:
+            return None
+        try:
+            parsed = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        filtered = self._filter_layer_geojson(parsed)
+        if filtered is None:
+            return None
+        try:
+            encoded = json.dumps(
+                filtered, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode("utf-8")
+        except ValueError:
+            # A non-finite coordinate (or other value allow_nan rejects) is a
+            # data problem, not a request-handling one -- treat it the same
+            # as any other unreadable/torn layer file.
+            return None
+        self._layer_geojson_cache[name] = (stat_key, encoded)
+        return encoded
+
+    def _filter_layer_geojson(self, parsed: object) -> dict | None:
+        if not isinstance(parsed, dict):
+            return None
+        features = parsed.get("features")
+        if not isinstance(features, list):
+            return None
+        filtered_features = []
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
+            filtered_feature = dict(feature)
+            filtered_feature["properties"] = {
+                key: value for key, value in properties.items() if key in PROPERTY_ALLOWLIST
+            }
+            filtered_features.append(filtered_feature)
+        result = dict(parsed)
+        result["features"] = filtered_features
+        return result
+
+    def messages(self, page: int, per_page: int = 50) -> dict:
+        safe_per_page = _clamp_per_page(per_page)
+        try:
+            return self._messages(page, safe_per_page)
+        except Exception:
+            return {
+                "total": 0,
+                "undated": 0,
+                "page": 1,
+                "pages": 1,
+                "per_page": safe_per_page,
+                "entries": [],
+            }
+
+    def _messages(self, page: int, per_page: int) -> dict:
+        entries, undated = self._message_entries()
+        total = len(entries)
+        pages = max(1, math.ceil(total / per_page))
+        if page < 1:
+            page = 1
+        elif page > pages:
+            page = pages
+        start = (page - 1) * per_page
+        page_entries = entries[start : start + per_page]
+        return {
+            "total": total,
+            "undated": undated,
+            "page": page,
+            "pages": pages,
+            "per_page": per_page,
+            "entries": page_entries,
+        }
+
+    def _message_entries(self) -> tuple[list[dict], int]:
+        path = self.data_dir / "output" / "geojson" / "messages.geojson"
+        stat_key = _stat_key(path)
+        if stat_key is None:
+            return [], 0
+        cached = self._messages_cache
+        if cached is not None and cached[0] == stat_key:
+            return cached[1], cached[2]
+        data = _read_bytes(path)
+        if data is None:
+            return [], 0
+        try:
+            parsed = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return [], 0
+        if not isinstance(parsed, dict):
+            return [], 0
+        features = parsed.get("features")
+        if not isinstance(features, list):
+            return [], 0
+        items: list[tuple[dict, datetime | None]] = []
+        undated = 0
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
+            entry_id = properties.get("feature_id")
+            if entry_id is None:
+                entry_id = feature.get("id")
+            if entry_id is None:
+                entry_id = ""
+            timestamp_utc = properties.get("timestamp_utc")
+            if not isinstance(timestamp_utc, str):
+                timestamp_utc = None
+            entry = {
+                "id": entry_id,
+                "text": properties.get("text") if isinstance(properties.get("text"), str) else None,
+                "timestamp_utc": timestamp_utc,
+                "event": properties.get("event")
+                if isinstance(properties.get("event"), str)
+                else None,
+                "device_name": properties.get("device_name")
+                if isinstance(properties.get("device_name"), str)
+                else None,
+            }
+            parsed_ts = _parse_timestamp(timestamp_utc)
+            if parsed_ts is None:
+                undated += 1
+            items.append((entry, parsed_ts))
+        items.sort(key=_entry_sort_key)
+        sorted_entries = [entry for entry, _ in items]
+        self._messages_cache = (stat_key, sorted_entries, undated)
+        return sorted_entries, undated
 
     def shaped_summary(self) -> dict:
         try:
