@@ -42,7 +42,9 @@ def test_corrupt_summary_json_truncated(tmp_path):
     summary_path.write_bytes(b'{"layers": {"messages": 1')
     store = ArtifactStore(tmp_path)
     shaped = store.shaped_summary()
-    assert shaped["freshness"]["state"] == "outputs_missing"
+    # Present-but-unparsable is distinct from absent (spec section 7):
+    # a malformed summary.json is freshness_unknown, not outputs_missing.
+    assert shaped["freshness"]["state"] == "freshness_unknown"
     assert shaped["layers"] == {}
 
 
@@ -118,6 +120,19 @@ def test_parse_error_sanitization_strips_absolute_path_and_exception_text(tmp_pa
     assert scary_path not in dumped
     assert "alice" not in dumped
     assert "300434065012340" not in dumped
+
+
+def test_parse_error_feed_url_path_becomes_unknown(tmp_path):
+    # A MapShare feed URL's last path segment would be the share identifier;
+    # `_basename()` must not treat it as a filename.
+    raw_entry = "https://inreach.garmin.com/feed/share/example: fetch error"
+    _write_json(
+        tmp_path / "output" / "summary.json",
+        {"layers": {}, "input_files": 1, "parse_errors": [raw_entry]},
+    )
+    store = ArtifactStore(tmp_path)
+    shaped = store.shaped_summary()
+    assert shaped["parse_errors"]["entries"] == [{"file": "unknown", "category": "parse-error"}]
 
 
 def test_parse_error_entry_not_matching_pattern_becomes_unknown(tmp_path):
@@ -235,37 +250,6 @@ def test_bbox_filtering_drops_non_finite_and_non_registry_entries(tmp_path):
     store = ArtifactStore(tmp_path)
     shaped = store.shaped_summary()
     assert shaped["bbox"] == {"messages": [-1.0, -2.0, 1.0, 2.0]}
-
-
-def test_layer_geojson_known_present_returns_exact_bytes(tmp_path):
-    geojson_dir = tmp_path / "output" / "geojson"
-    geojson_dir.mkdir(parents=True)
-    content = b'{"type": "FeatureCollection", "features": []}'
-    (geojson_dir / "messages.geojson").write_bytes(content)
-    store = ArtifactStore(tmp_path)
-    assert store.layer_geojson("messages") == content
-
-
-def test_layer_geojson_absent_layer_returns_none(tmp_path):
-    geojson_dir = tmp_path / "output" / "geojson"
-    geojson_dir.mkdir(parents=True)
-    store = ArtifactStore(tmp_path)
-    assert store.layer_geojson("track_points") is None
-
-
-def test_layer_geojson_unknown_name_returns_none(tmp_path):
-    store = ArtifactStore(tmp_path)
-    assert store.layer_geojson("nope") is None
-
-
-def test_layer_geojson_traversal_attempts_return_none(tmp_path):
-    geojson_dir = tmp_path / "output" / "geojson"
-    geojson_dir.mkdir(parents=True)
-    (geojson_dir / "messages.geojson").write_bytes(b"{}")
-    store = ArtifactStore(tmp_path)
-    assert store.layer_geojson("..%2F") is None
-    assert store.layer_geojson("../etc") is None
-    assert store.layer_geojson("../output/geojson/messages") is None
 
 
 def test_registry_contains_expected_layers():

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - garmin-outreach{% endblock %}
+{% block content %}
+<section>
+  <h2>Freshness</h2>
+  <p>State: <strong>{{ summary["freshness"]["state"] }}</strong></p>
+  {% if freshness_command %}
+  <p>Fix: <code>{{ freshness_command }}</code></p>
+  {% endif %}
+  {% if summary["freshness"]["mapshare_last_success_utc"] %}
+  <p>MapShare last successful sync (UTC): <code>{{ summary["freshness"]["mapshare_last_success_utc"] }}</code></p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Layers</h2>
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Features</th></tr>
+    </thead>
+    <tbody>
+      {% for name in layers %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>{{ summary["layers"].get(name, "no data") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Capabilities</h2>
+  {% if summary["capabilities"]["geojson_available"] %}
+  <p>GeoJSON exports are available ({{ summary["capabilities"]["layers_present"] | length }} layer(s)).</p>
+  {% else %}
+  <p>
+    GeoJSON exports are not available. Run
+    <code>garmin-outreach build --formats geojson</code>
+    (or the default formats, which include geojson) to enable them.
+  </p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Inputs</h2>
+  <p>Input files: {{ summary["input_files"] if summary["input_files"] is not none else "unknown" }}</p>
+</section>
+
+<section>
+  <h2>Parse errors</h2>
+  <p>Count: {{ summary["parse_errors"]["count"] }}</p>
+  {% if summary["parse_errors"]["entries"] %}
+  <ul>
+    {% for entry in summary["parse_errors"]["entries"] %}
+    <li>{{ entry["file"] }} ({{ entry["category"] }})</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}

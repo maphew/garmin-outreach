@@ -1,5 +1,7 @@
 import argparse
+import contextlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -89,9 +91,11 @@ def test_build_always_rebuilds(tmp_path, monkeypatch):
 
 
 def test_unknown_command_never_reaches_rebuild(monkeypatch, capsys):
-    """Regression for the fall-through that would crash a future `serve`
-    command: an unrecognized args.command with no no_build/cleanup
-    attributes must not call rebuild()."""
+    """Regression for the dispatch fall-through: an unrecognized
+    args.command with no no_build/cleanup attributes must not call
+    rebuild(). Uses a synthetic command name (not a real subcommand) so this
+    stays independent of any actual command's dispatch branch, including
+    the now-real `serve`."""
     calls = []
     _fake_rebuild(monkeypatch, calls)
 
@@ -100,18 +104,17 @@ def test_unknown_command_never_reaches_rebuild(monkeypatch, capsys):
         root.add_argument("--data-dir", type=Path, default=Path("data"))
         root.add_argument("--formats", default="gpkg,geojson,shp")
         sub = root.add_subparsers(dest="command", required=True)
-        sub.add_parser("serve")
+        sub.add_parser("frobnicate")
         return root
 
     monkeypatch.setattr(cli, "parser", fake_parser)
 
-    cli.main(["serve"])
+    cli.main(["frobnicate"])
 
     assert calls == []
     captured = capsys.readouterr()
     # Pins today's placeholder behavior (an unrecognized command prints an
-    # empty JSON object and exits 0); this will change once a real `serve`
-    # command lands, since the spec says `serve` keeps stdout clean.
+    # empty JSON object and exits 0).
     assert json.loads(captured.out) == {}
 
 
@@ -131,3 +134,47 @@ def test_ingest_no_build_stdout_contract(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"archive": [{"path": str(destination), "created": True}]}
+
+
+def test_serve_dispatches_read_only_with_clean_stdout(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("starlette")
+    calls = []
+    _fake_rebuild(monkeypatch, calls)
+
+    run_calls = []
+
+    def fake_run(data_dir, *, host, port, open_browser):
+        run_calls.append((data_dir, host, port, open_browser))
+
+    import garmin_outreach.serve.app as serve_app_module
+
+    monkeypatch.setattr(serve_app_module, "run", fake_run)
+
+    @contextlib.contextmanager
+    def fail_writer_lock(*args, **kwargs):
+        pytest.fail("writer_lock should not be entered for serve")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(cli, "writer_lock", fail_writer_lock)
+
+    cli.main(
+        ["--data-dir", str(tmp_path), "serve", "--host", "127.0.0.1", "--port", "9999", "--no-open"]
+    )
+
+    assert run_calls == [(tmp_path, "127.0.0.1", 9999, False)]
+    assert calls == []
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_serve_missing_ui_extra_raises_actionable_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "garmin_outreach.serve.app", None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--data-dir", str(tmp_path), "serve"])
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "uv sync --extra ui" in captured.err
+    assert "pip install -e .[ui]" in captured.err

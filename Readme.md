@@ -140,6 +140,20 @@ These deliberately conservative defaults avoid drawing spurious lines between se
 uv run garmin-outreach build --trip-gap-hours 12 --jump-km 25 --max-speed-kmh 160
 ```
 
+## Local web UI (preview)
+
+An optional local dashboard shows the current pipeline status: layer feature counts, output
+freshness, capabilities, and recent parse errors.
+
+```powershell
+uv sync --extra ui
+uv run garmin-outreach serve
+```
+
+This opens `http://127.0.0.1:8477` in your browser. The server binds to loopback only by design
+(no remote access) and is read-only in this phase: it never rebuilds and never takes the writer
+lock, so run `garmin-outreach build` first (or alongside it) to refresh what the dashboard shows.
+
 ## Automation example
 
 Once an initial sync or browser sign-in has succeeded, Windows Task Scheduler can invoke uv

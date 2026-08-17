@@ -97,6 +97,14 @@ def parser() -> argparse.ArgumentParser:
         _add_cleanup_options(command)
     build = next(action for action in sub.choices.values() if action.prog.endswith(" build"))
     _add_cleanup_options(build)
+
+    serve = sub.add_parser(
+        "serve", help="Run the local read-only web UI over data/ outputs (requires the ui extra)"
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8477)
+    serve.add_argument("--open", action=argparse.BooleanOptionalAction, default=True)
+
     return root
 
 
@@ -113,6 +121,20 @@ def main(argv: list[str] | None = None) -> None:
     if invalid:
         raise SystemExit(f"Unsupported output format(s): {', '.join(sorted(invalid))}")
     try:
+        if args.command == "serve":
+            # Lazy import: the `ui` extra (starlette/uvicorn/jinja2/datastar-py)
+            # is optional, and importing garmin_outreach.serve.app eagerly
+            # would make every other command pay for it.
+            try:
+                from .serve.app import run
+            except ImportError as error:
+                raise RuntimeError(
+                    "The web UI is optional. Install it with `uv sync --extra ui` "
+                    "(or `pip install -e .[ui]`)."
+                ) from error
+            # Read-only: never takes the writer lock and never rebuilds.
+            run(args.data_dir, host=args.host, port=args.port, open_browser=args.open)
+            return
         if args.command == "mapshare":
             # Resolve the identifier and (interactively, if requested) the
             # password before taking the writer lock: getpass.getpass()

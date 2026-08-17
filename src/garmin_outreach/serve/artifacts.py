@@ -38,7 +38,11 @@ def _read_bytes(path: Path) -> bytes | None:
         try:
             return path.read_bytes()
         except (FileNotFoundError, PermissionError):
-            if attempt == 0:
+            # No retry is worth attempting if the parent directory itself
+            # doesn't exist yet (e.g. an empty data/ dir) -- the file can't
+            # appear mid-request, so this would just pay the delay twice per
+            # request for nothing.
+            if attempt == 0 and path.parent.is_dir():
                 time.sleep(_RETRY_DELAY_SECONDS)
                 continue
             return None
@@ -52,7 +56,7 @@ def _stat_mtime(path: Path) -> float | None:
         try:
             return path.stat().st_mtime
         except (FileNotFoundError, PermissionError):
-            if attempt == 0:
+            if attempt == 0 and path.parent.is_dir():
                 time.sleep(_RETRY_DELAY_SECONDS)
                 continue
             return None
@@ -62,7 +66,12 @@ def _stat_mtime(path: Path) -> float | None:
 
 
 def _basename(path_text: str) -> str:
-    tail = re.split(r"[\\/]", path_text.strip())[-1]
+    stripped = path_text.strip()
+    if "://" in stripped:
+        # A feed URL's last path segment would be the MapShare identifier;
+        # treat anything URL-shaped as unparseable rather than leak it.
+        return "unknown"
+    tail = re.split(r"[\\/]", stripped)[-1]
     return tail or "unknown"
 
 
@@ -95,26 +104,26 @@ class ArtifactStore:
 
     def _shaped_summary(self) -> dict:
         summary_path = self.data_dir / "output" / "summary.json"
-        raw_summary, summary_mtime = self._read_summary(summary_path)
+        raw_summary, summary_mtime, summary_present = self._read_summary(summary_path)
         return {
             "layers": self._shaped_layers(raw_summary),
             "bbox": self._shaped_bbox(raw_summary),
             "input_files": self._shaped_input_files(raw_summary),
             "parse_errors": self._shaped_parse_errors(raw_summary),
             "capabilities": self._capabilities(),
-            "freshness": self._freshness(raw_summary, summary_mtime),
+            "freshness": self._freshness(raw_summary, summary_mtime, summary_present),
         }
 
-    def _read_summary(self, path: Path) -> tuple[object | None, float | None]:
+    def _read_summary(self, path: Path) -> tuple[object | None, float | None, bool]:
         data = _read_bytes(path)
         if data is None:
-            return None, None
+            return None, None, False
         mtime = _stat_mtime(path)
         try:
             parsed = json.loads(data)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return None, mtime
-        return parsed, mtime
+            return None, mtime, True
+        return parsed, mtime, True
 
     def _shaped_layers(self, raw_summary: object) -> dict[str, int]:
         if not isinstance(raw_summary, dict):
@@ -175,9 +184,11 @@ class ArtifactStore:
                     present.append(name)
         return {"geojson_available": available, "layers_present": present}
 
-    def _freshness(self, raw_summary: object, summary_mtime: float | None) -> dict:
+    def _freshness(
+        self, raw_summary: object, summary_mtime: float | None, summary_present: bool
+    ) -> dict:
         mapshare_last_success_utc = self._mapshare_last_success_utc()
-        if raw_summary is None:
+        if not summary_present:
             return {
                 "state": "outputs_missing",
                 "mapshare_last_success_utc": mapshare_last_success_utc,
@@ -239,16 +250,3 @@ class ArtifactStore:
             return None
         value = parsed.get("last_success_utc")
         return value if isinstance(value, str) else None
-
-    def layer_geojson(self, name: str) -> bytes | None:
-        if name not in LAYERS or "/" in name or "\\" in name:
-            return None
-        geojson_dir = self.data_dir / "output" / "geojson"
-        try:
-            resolved_dir = geojson_dir.resolve()
-            candidate = (geojson_dir / f"{name}.geojson").resolve()
-        except OSError:
-            return None
-        if not candidate.is_relative_to(resolved_dir):
-            return None
-        return _read_bytes(candidate)

@@ -15,10 +15,14 @@ Version `0.1.0` is a working Python 3.11+ CLI with:
 - conservative derived-trip generation; and
 - GeoPackage, GeoJSON, and Shapefile output.
 
-Current verification covers 11 passing tests, Ruff, a locked uv environment on Python 3.11,
+Current verification covers 106 passing tests, Ruff, a locked uv environment on Python 3.11,
 generated-layer reads as `EPSG:4326`, Playwright Chromium launch, and the intended signed-out
 headless Explore failure. The authenticated Explore POST has not yet received broad real-account
 validation, so the browser integration remains experimental.
+
+`garmin-outreach serve` (requires the optional `ui` extra) runs a local, loopback-only web
+dashboard over `data/` outputs. It is read-only in this phase: it never takes the writer lock and
+never triggers a rebuild, only reading whatever `summary.json`/`mapshare-state.json` already say.
 
 ## Fast start
 
@@ -81,6 +85,12 @@ The central design choice is that acquisition and conversion are separate. Netwo
 | `src/garmin_outreach/cleanup.py` | Derived trip splitting and Haversine distance calculation |
 | `src/garmin_outreach/pipeline.py` | Raw-archive rebuild orchestration and parse-error collection |
 | `src/garmin_outreach/exporters.py` | GeoPandas/Pyogrio writers, atomic output replacement, Shapefile aliases |
+| `src/garmin_outreach/serve/app.py` | `create_app()`/`run()`: Starlette wiring, uvicorn startup, loopback-host validation (`ui` extra) |
+| `src/garmin_outreach/serve/artifacts.py` | Read-only, tolerant adapter that shapes `data/output/summary.json` and `mapshare-state.json` for the UI |
+| `src/garmin_outreach/serve/security.py` | Host allowlist middleware, security-header middleware, and the CSP string |
+| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/api/summary`, static assets, 404/500 fallbacks |
+| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard (autoescaped, no raw `summary.json` fields) |
+| `src/garmin_outreach/serve/static/` | Vendored, content-hashed Datastar bundle plus `app.css` |
 | `tests/fixtures/` | Synthetic, non-private Garmin-like KML and GPX |
 | `tests/` | Parser, trip, archive, sync-security, idempotency, and writer tests |
 
