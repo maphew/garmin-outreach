@@ -183,6 +183,64 @@ def test_mapshare_build_failure_after_acquisition_exits_2_with_cause_message(
     assert captured.err.strip() == "error: disk is full"
 
 
+def test_mapshare_build_failure_with_programming_error_cause_reraises(tmp_path, monkeypatch):
+    """A `BuildFailedAfterAcquisition` whose `.cause` is not a
+    RuntimeError/ValueError is a programming error, not an expected user
+    failure -- it must surface as a real traceback, not a clean `error: ...`
+    exit 2 that would hide the bug."""
+    monkeypatch.setattr(
+        services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 3, "requests": 1}
+    )
+
+    def failing_rebuild(*args, **kwargs):
+        raise TypeError("unexpected argument shape")
+
+    monkeypatch.setattr(services, "rebuild", failing_rebuild)
+
+    with pytest.raises(TypeError, match="unexpected argument shape"):
+        cli.main(["--data-dir", str(tmp_path), "mapshare", "sample"])
+
+
+def test_mapshare_build_failure_with_runtime_error_cause_still_exits_2(
+    tmp_path, monkeypatch, capsys
+):
+    """A RuntimeError cause is the expected/handled shape and keeps the
+    clean one-line CLI failure behavior (regression guard alongside the
+    TypeError case above)."""
+    monkeypatch.setattr(
+        services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 3, "requests": 1}
+    )
+
+    def failing_rebuild(*args, **kwargs):
+        raise RuntimeError("disk is full")
+
+    monkeypatch.setattr(services, "rebuild", failing_rebuild)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--data-dir", str(tmp_path), "mapshare", "sample"])
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "error: disk is full"
+
+
+def test_mapshare_missing_identifier_with_ask_password_does_not_prompt(tmp_path, monkeypatch):
+    """The identifier pre-check must run before getpass.getpass() -- a
+    missing identifier must fail immediately rather than blocking on a
+    terminal prompt for a request that was always going to fail."""
+
+    def _fail_if_called(*args, **kwargs):
+        pytest.fail("getpass.getpass() must not be called when the identifier is missing")
+
+    monkeypatch.setattr(cli.getpass, "getpass", _fail_if_called)
+    monkeypatch.delenv("GARMIN_MAPSHARE_ID", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--data-dir", str(tmp_path), "mapshare", "--ask-password"])
+
+    assert excinfo.value.code == 2
+
+
 def test_serve_dispatches_read_only_with_clean_stdout(tmp_path, monkeypatch, capsys):
     pytest.importorskip("starlette")
     calls = []

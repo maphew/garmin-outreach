@@ -8,8 +8,11 @@ same-origin. These controls are load-bearing, not hardening backlog.
 
 from __future__ import annotations
 
+import secrets
+
 from starlette.datastructures import MutableHeaders
-from starlette.responses import PlainTextResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Reject any request whose Host header does not resolve to one of these
@@ -79,6 +82,60 @@ def _parse_host(raw_host: str) -> str | None:
         return text.lower()
     host = text.split(":", 1)[0].strip()
     return host.lower() or None
+
+
+# --- Cross-site request defense (docs/spec-serve-ui.md section 8) ---------
+#
+# Loopback is not a privacy boundary: any web page the user visits can send
+# a cross-origin POST to localhost. Every job-mutating POST route must pass
+# all three checks below before its body is even parsed. The custom header
+# forces a CORS preflight an attacker's page cannot pass (no permissive CORS
+# is ever configured), and its value is a per-process token -- a
+# same-origin-only forcing function, not a secret kept out of the page's own
+# origin, so it is fine to embed in the dashboard HTML for `jobs.js` to read.
+
+JOB_CSRF_HEADER = "X-Garmin-Outreach-Job"
+_ALLOWED_SEC_FETCH_SITE = {"same-origin", "none"}
+_CSRF_ERROR_HEADERS = {"Cache-Control": "no-store"}
+
+
+def new_job_csrf_token() -> str:
+    """Mint a per-process job token (docs/spec-serve-ui.md section 8)."""
+    return secrets.token_urlsafe(16)
+
+
+def check_job_csrf(request: Request, token: str) -> JSONResponse | None:
+    """Cross-site request defense for POST /api/jobs/*.
+
+    Returns `None` when the request may proceed, or the 403/415 JSON
+    response to send otherwise. Order: `Sec-Fetch-Site` (absent header, or
+    more than one value, is rejected -- browsers that send it at all send it
+    exactly once on every request this app cares about; no permissive
+    fallback), then the custom per-process header, then `Content-Type`. Both
+    403 causes share one neutral body -- no failure detail is echoed back.
+    """
+    sec_fetch_site_values = request.headers.getlist("sec-fetch-site")
+    if len(sec_fetch_site_values) != 1 or sec_fetch_site_values[0] not in _ALLOWED_SEC_FETCH_SITE:
+        return JSONResponse(
+            {"error": "request rejected"},
+            status_code=403,
+            headers=_CSRF_ERROR_HEADERS,
+        )
+    supplied = request.headers.get(JOB_CSRF_HEADER)
+    if not supplied or not supplied.isascii() or not secrets.compare_digest(supplied, token):
+        return JSONResponse(
+            {"error": "request rejected"},
+            status_code=403,
+            headers=_CSRF_ERROR_HEADERS,
+        )
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        return JSONResponse(
+            {"error": "unsupported content type"},
+            status_code=415,
+            headers=_CSRF_ERROR_HEADERS,
+        )
+    return None
 
 
 class HostAllowlistMiddleware:

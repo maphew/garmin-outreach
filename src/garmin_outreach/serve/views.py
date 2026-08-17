@@ -8,6 +8,7 @@ Jinja2's default autoescape (no `|safe`, no `Markup`).
 from __future__ import annotations
 
 import importlib.resources as resources
+import os
 import re
 from pathlib import PurePosixPath
 
@@ -15,8 +16,9 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from . import jobs
 from .artifacts import LAYERS
-from .security import BASELINE_HEADERS
+from .security import BASELINE_HEADERS, check_job_csrf
 
 _STATIC_PACKAGE = "garmin_outreach.serve"
 _STATIC_RESOURCE_NAME = "static"
@@ -68,6 +70,27 @@ def _layer_kind(name: str) -> str:
     return "line"
 
 
+def _jobs_view_state(request: Request) -> dict:
+    """Shaped jobs-section state for the dashboard template.
+
+    Capability reads (env vars, `mapshare-state.json`, `rookiepy` presence)
+    live in `jobs.py`, never in the template (docs/spec-serve-ui.md section 7
+    Phase B).
+    """
+    store = request.app.state.artifact_store
+    runner: jobs.JobRunner = request.app.state.job_runner
+    snapshot = runner.snapshot()
+    return {
+        "mapshare_available": jobs.mapshare_available(store.data_dir),
+        "mapshare_hint": jobs.MAPSHARE_UNAVAILABLE_HINT,
+        "explore_available": jobs.explore_available(),
+        "explore_hint": jobs.EXPLORE_UNAVAILABLE_HINT,
+        "current": snapshot["current"],
+        "last": snapshot["last"],
+        "running": snapshot["current"] is not None and snapshot["current"]["state"] == "running",
+    }
+
+
 def dashboard(request: Request) -> HTMLResponse:
     # Sync handler: `ArtifactStore.shaped_summary()` does blocking file IO,
     # and Starlette runs sync endpoints in a threadpool instead of on the
@@ -79,6 +102,8 @@ def dashboard(request: Request) -> HTMLResponse:
         summary=summary,
         layers=LAYERS,
         freshness_command=_freshness_command(summary["freshness"]["state"]),
+        jobs=_jobs_view_state(request),
+        job_csrf_token=request.app.state.job_csrf_token,
     )
     return HTMLResponse(html)
 
@@ -155,6 +180,81 @@ def api_layer_geojson(request: Request) -> Response:
         media_type="application/geo+json",
         headers={"Cache-Control": "no-store"},
     )
+
+
+# --- Jobs (docs/spec-serve-ui.md section 7 Phase B, section 8) ------------
+
+
+async def _job_csrf_and_params(request: Request) -> tuple[Response | None, dict | None]:
+    """Shared CSRF + body-validation prologue for every job POST route.
+
+    Returns `(error_response, None)` if the request must be rejected, or
+    `(None, params)` with `params` ready to merge into `runner.start()`.
+    """
+    csrf_error = check_job_csrf(request, request.app.state.job_csrf_token)
+    if csrf_error is not None:
+        return csrf_error, None
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400), None
+    try:
+        params = jobs.parse_cleanup_params(body)
+    except jobs.InvalidJobParams as error:
+        return JSONResponse({"error": str(error)}, status_code=400), None
+    return None, params
+
+
+async def api_jobs_build(request: Request) -> Response:
+    error, params = await _job_csrf_and_params(request)
+    if error is not None:
+        return error
+    runner: jobs.JobRunner = request.app.state.job_runner
+    accepted, snapshot = runner.start("build", formats=jobs.DEFAULT_FORMATS, **params)
+    return JSONResponse(snapshot, status_code=202 if accepted else 409)
+
+
+async def api_jobs_mapshare(request: Request) -> Response:
+    error, params = await _job_csrf_and_params(request)
+    if error is not None:
+        return error
+    store = request.app.state.artifact_store
+    identifier = jobs.resolve_mapshare_identifier(store.data_dir)
+    if identifier is None:
+        # Naming the env var, never the (possibly-resolved) identifier or
+        # feed_url itself, in the response body.
+        return JSONResponse({"error": jobs.MAPSHARE_UNAVAILABLE_HINT}, status_code=400)
+    runner: jobs.JobRunner = request.app.state.job_runner
+    accepted, snapshot = runner.start(
+        "mapshare",
+        identifier=identifier,
+        username=os.environ.get("GARMIN_MAPSHARE_USERNAME", ""),
+        password=os.environ.get("GARMIN_MAPSHARE_PASSWORD"),
+        formats=jobs.DEFAULT_FORMATS,
+        **params,
+    )
+    return JSONResponse(snapshot, status_code=202 if accepted else 409)
+
+
+async def api_jobs_explore(request: Request) -> Response:
+    error, params = await _job_csrf_and_params(request)
+    if error is not None:
+        return error
+    if not jobs.explore_available():
+        return JSONResponse({"error": jobs.EXPLORE_UNAVAILABLE_HINT}, status_code=400)
+    runner: jobs.JobRunner = request.app.state.job_runner
+    accepted, snapshot = runner.start(
+        "explore",
+        export_formats=jobs.DEFAULT_EXPLORE_FORMATS,
+        formats=jobs.DEFAULT_FORMATS,
+        **params,
+    )
+    return JSONResponse(snapshot, status_code=202 if accepted else 409)
+
+
+def api_jobs_snapshot(request: Request) -> JSONResponse:
+    runner: jobs.JobRunner = request.app.state.job_runner
+    return JSONResponse(runner.snapshot())
 
 
 def _read_static_bytes(filename: str) -> bytes | None:

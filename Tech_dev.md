@@ -15,16 +15,26 @@ Version `0.1.0` is a working Python 3.11+ CLI with:
 - conservative derived-trip generation; and
 - GeoPackage, GeoJSON, and Shapefile output.
 
-Current verification covers 147 passing tests, Ruff, a locked uv environment on Python 3.11,
+Current verification covers 205 passing tests, Ruff, a locked uv environment on Python 3.11,
 generated-layer reads as `EPSG:4326`, Playwright Chromium launch, and the intended signed-out
 headless Explore failure. The authenticated Explore POST has not yet received broad real-account
 validation, so the browser integration remains experimental.
 
 `garmin-outreach serve` (requires the optional `ui` extra) runs a local, loopback-only web
-dashboard over `data/` outputs, including a messages timeline (`/messages`) and a map (`/map`). It
-is read-only in this phase: it never takes the writer lock and never triggers a rebuild, only
-reading whatever `summary.json`/`mapshare-state.json` already say. The map is offline-only:
-MapLibre GL JS is vendored locally and the page never makes external tile requests.
+dashboard over `data/` outputs, including a messages timeline (`/messages`) and a map (`/map`). The
+read-only routes never take the writer lock and never trigger a rebuild on their own, only reading
+whatever `summary.json`/`mapshare-state.json` already say. The map is offline-only: MapLibre GL JS
+is vendored locally and the page never makes external tile requests.
+
+A Jobs section on the dashboard triggers `build`/`mapshare`/`explore` through the same
+`services.run_*` orchestration the CLI uses (single-flight per process, daemon worker threads, no
+SSE yet -- the dashboard polls `GET /api/jobs` every 2s while a job is `running` and reloads on
+completion). Every job POST is guarded by cross-site request defenses (`Sec-Fetch-Site`, a
+per-process custom header, `Content-Type: application/json`); job POST bodies accept only bounded
+`trip_gap_hours`/`max_speed_kmh`/`jump_km` overrides, never an identifier, feed URL, password, or
+cookie material from the browser. Scripting `POST /api/jobs/*` from outside a browser (curl,
+httpx) requires forging a `Sec-Fetch-Site` value and the per-process token, so a bare 403 there is
+the intended policy, not a bug.
 
 ## Fast start
 
@@ -89,10 +99,11 @@ The central design choice is that acquisition and conversion are separate. Netwo
 | `src/garmin_outreach/exporters.py` | GeoPandas/Pyogrio writers, atomic output replacement, Shapefile aliases |
 | `src/garmin_outreach/serve/app.py` | `create_app()`/`run()`: Starlette wiring, uvicorn startup, loopback-host validation (`ui` extra) |
 | `src/garmin_outreach/serve/artifacts.py` | Read-only, tolerant adapter that shapes `data/output/summary.json` and `mapshare-state.json` for the UI |
-| `src/garmin_outreach/serve/security.py` | Host allowlist middleware, security-header middleware, and the CSP string |
-| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/messages`, `/map`, `/api/summary`, `/api/layers/{name}.geojson`, static assets, 404/500 fallbacks |
-| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard, messages timeline, and map (autoescaped, no raw `summary.json` fields) |
-| `src/garmin_outreach/serve/static/` | Vendored, content-hashed Datastar and MapLibre GL JS bundles plus `app.css`/`map.js`. The map is offline-only: MapLibre is vendored and no external tile requests are ever made. |
+| `src/garmin_outreach/serve/security.py` | Host allowlist middleware, security-header middleware, CSP string, and job-route CSRF defenses (`check_job_csrf`) |
+| `src/garmin_outreach/serve/jobs.py` | In-process single-flight job runner (`build`/`mapshare`/`explore`) over `services.run_*`, bounded-param validation, mapshare/explore capability detection, absolute-path scrubbing for job failure details |
+| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/messages`, `/map`, `/api/summary`, `/api/layers/{name}.geojson`, `/api/jobs*`, static assets, 404/500 fallbacks |
+| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard (incl. Jobs section), messages timeline, and map (autoescaped, no raw `summary.json` fields) |
+| `src/garmin_outreach/serve/static/` | Vendored, content-hashed Datastar and MapLibre GL JS bundles plus `app.css`/`map.js`/`jobs.js`. The map is offline-only: MapLibre is vendored and no external tile requests are ever made. |
 | `tests/fixtures/` | Synthetic, non-private Garmin-like KML and GPX |
 | `tests/` | Parser, trip, archive, sync-security, idempotency, and writer tests |
 

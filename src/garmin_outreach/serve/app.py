@@ -25,8 +25,18 @@ from starlette.middleware import Middleware
 from starlette.routing import Route
 
 from .artifacts import ArtifactStore
-from .security import ALLOWED_HOSTS, HostAllowlistMiddleware, SecurityHeadersMiddleware
+from .jobs import JobRunner
+from .security import (
+    ALLOWED_HOSTS,
+    HostAllowlistMiddleware,
+    SecurityHeadersMiddleware,
+    new_job_csrf_token,
+)
 from .views import (
+    api_jobs_build,
+    api_jobs_explore,
+    api_jobs_mapshare,
+    api_jobs_snapshot,
     api_layer_geojson,
     api_summary,
     dashboard,
@@ -75,6 +85,10 @@ def create_app(data_dir: Path) -> Starlette:
         Route("/map", map_view, methods=["GET"]),
         Route("/api/summary", api_summary, methods=["GET"]),
         Route("/api/layers/{name}.geojson", api_layer_geojson, methods=["GET"]),
+        Route("/api/jobs", api_jobs_snapshot, methods=["GET"]),
+        Route("/api/jobs/build", api_jobs_build, methods=["POST"]),
+        Route("/api/jobs/mapshare", api_jobs_mapshare, methods=["POST"]),
+        Route("/api/jobs/explore", api_jobs_explore, methods=["POST"]),
         Route("/static/{filename}", static_asset, methods=["GET"]),
     ]
     middleware = [
@@ -95,6 +109,11 @@ def create_app(data_dir: Path) -> Starlette:
     )
     app.state.artifact_store = artifact_store
     app.state.templates = templates
+    app.state.job_runner = JobRunner(artifact_store.data_dir)
+    # Per-process CSRF forcing-function token (docs/spec-serve-ui.md section
+    # 8): minted once at app-creation time, embedded in the dashboard page
+    # for jobs.js's fetch calls, never logged or put in a URL.
+    app.state.job_csrf_token = new_job_csrf_token()
     return app
 
 

@@ -135,12 +135,20 @@ def main(argv: list[str] | None = None) -> None:
             run(args.data_dir, host=args.host, port=args.port, open_browser=args.open)
             return
         if args.command == "mapshare":
+            # Cheap pre-check, duplicated intentionally: run_mapshare() also
+            # validates the identifier, but that happens after this
+            # getpass.getpass() prompt. Without this check, `mapshare
+            # --ask-password` with no identifier prompts for a password
+            # before failing on the identifier -- an unnecessary blocking
+            # terminal prompt for a request that was always going to fail.
+            if not args.identifier:
+                raise RuntimeError("Supply a MapShare identifier or set GARMIN_MAPSHARE_ID")
             # Resolve the (interactively, if requested) password before
             # taking the writer lock: getpass.getpass() blocks on terminal
             # input, and doing that inside the lock would stall every other
             # writer while this process waits at the prompt. Identifier
-            # validation lives in run_mapshare() so the CLI and the UI job
-            # runner share the same check.
+            # validation also lives in run_mapshare() so the CLI and the UI
+            # job runner share the same check.
             mapshare_password = (
                 getpass.getpass("MapShare password: ")
                 if args.ask_password
@@ -229,6 +237,18 @@ def main(argv: list[str] | None = None) -> None:
                         )
         print(json.dumps(result, indent=2))
     except (RuntimeError, ValueError) as error:
+        # BuildFailedAfterAcquisition is a RuntimeError, but its `.cause` can
+        # be any exception the rebuild step raised, including a programming
+        # error (TypeError, AttributeError, ...). Printing "error: <msg>"
+        # and exiting 2 for those would hide a bug behind a clean-looking
+        # user-facing failure; only a genuinely expected RuntimeError/
+        # ValueError cause gets the friendly one-line treatment.
+        from .services import BuildFailedAfterAcquisition
+
+        if isinstance(error, BuildFailedAfterAcquisition) and not isinstance(
+            error.cause, (RuntimeError, ValueError)
+        ):
+            raise error.cause from error
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(2) from error
 
