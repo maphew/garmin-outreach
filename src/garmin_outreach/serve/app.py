@@ -13,6 +13,8 @@ installed.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import threading
 import time
 import webbrowser
@@ -24,7 +26,9 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route
 
+from . import jobs as jobs_module
 from .artifacts import ArtifactStore
+from .events import EventBus
 from .jobs import JobRunner
 from .security import (
     ALLOWED_HOSTS,
@@ -33,6 +37,8 @@ from .security import (
     new_job_csrf_token,
 )
 from .views import (
+    DEFAULT_SSE_KEEPALIVE_SECONDS,
+    api_events,
     api_jobs_build,
     api_jobs_explore,
     api_jobs_mapshare,
@@ -55,14 +61,26 @@ _BROWSER_OPEN_TIMEOUT_SECONDS = 10.0
 _BROWSER_OPEN_POLL_SECONDS = 0.05
 
 
-def create_app(data_dir: Path) -> Starlette:
-    """Build the phase-1 read-only Starlette app over `data_dir`.
+def create_app(
+    data_dir: Path,
+    *,
+    sse_keepalive_seconds: float = DEFAULT_SSE_KEEPALIVE_SECONDS,
+    max_event_subscribers: int = 8,
+    event_queue_size: int = 64,
+) -> Starlette:
+    """Build the Starlette app over `data_dir` (docs/spec-serve-ui.md).
 
     Routes: `GET /` (dashboard), `GET /messages` (paged messages timeline),
     `GET /map` (MapLibre island + layer toggles), `GET /api/summary` (shaped
     JSON, never the raw file), `GET /api/layers/{name}.geojson` (allowlisted
-    layer content), `GET /static/{filename}` (vendored assets). Anything else
-    is a friendly 404 (no traceback; `debug=False`).
+    layer content), `GET /api/jobs*` (job snapshot + build/mapshare/explore
+    triggers), `GET /api/events` (SSE live job updates, section 7 Phase B),
+    `GET /static/{filename}` (vendored assets). Anything else is a friendly
+    404 (no traceback; `debug=False`).
+
+    `sse_keepalive_seconds`/`max_event_subscribers`/`event_queue_size` exist
+    so tests can shrink the keepalive interval and subscriber cap rather
+    than waiting out real production defaults.
     """
     artifact_store = ArtifactStore(data_dir)
     templates = jinja2.Environment(
@@ -89,6 +107,7 @@ def create_app(data_dir: Path) -> Starlette:
         Route("/api/jobs/build", api_jobs_build, methods=["POST"]),
         Route("/api/jobs/mapshare", api_jobs_mapshare, methods=["POST"]),
         Route("/api/jobs/explore", api_jobs_explore, methods=["POST"]),
+        Route("/api/events", api_events, methods=["GET"]),
         Route("/static/{filename}", static_asset, methods=["GET"]),
     ]
     middleware = [
@@ -100,20 +119,52 @@ def create_app(data_dir: Path) -> Starlette:
         # DNS-rebinding defense: reject any request whose Host header does
         # not resolve to a loopback name (docs/spec-serve-ui.md section 8).
         Middleware(HostAllowlistMiddleware),
+        # v1 ships no GZipMiddleware anywhere (docs/spec-serve-ui.md section
+        # 8): Starlette's gzip cannot exclude the SSE path and buffers
+        # streams, which would defeat /api/events entirely. Loopback
+        # bandwidth is free, so there is no compression middleware to
+        # configure around this -- simply never add one.
     ]
+    event_bus = EventBus(max_subscribers=max_event_subscribers, queue_size=event_queue_size)
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: Starlette):
+        # Starlette's lifespan startup phase runs on the server's event loop
+        # (the only one this process ever uses -- section 5 requires a
+        # single uvicorn worker), so this is the one and only place
+        # `EventBus` learns which loop to bridge worker-thread `publish()`
+        # calls onto. Nothing runs on shutdown: job worker threads are
+        # daemon threads and are abandoned, not joined (section 7 Phase B).
+        event_bus.attach_loop(asyncio.get_running_loop())
+        yield
+
     app = Starlette(
         debug=False,
         routes=routes,
         middleware=middleware,
         exception_handlers={404: not_found, 500: server_error},
+        lifespan=_lifespan,
     )
     app.state.artifact_store = artifact_store
     app.state.templates = templates
-    app.state.job_runner = JobRunner(artifact_store.data_dir)
+    app.state.event_bus = event_bus
+    app.state.sse_keepalive_seconds = sse_keepalive_seconds
+    app.state.job_runner = JobRunner(artifact_store.data_dir, event_bus=event_bus)
     # Per-process CSRF forcing-function token (docs/spec-serve-ui.md section
     # 8): minted once at app-creation time, embedded in the dashboard page
     # for jobs.js's fetch calls, never logged or put in a URL.
     app.state.job_csrf_token = new_job_csrf_token()
+    # Cached once here rather than re-checked on every dashboard render
+    # (unlike `jobs.mapshare_available()`, called per-render in views.py):
+    # whether the `browser` extra's cookie reader (`rookiepy`) is importable
+    # is a process-lifetime-stable fact, but `mapshare-state.json` can
+    # change mid-session (this server's own mapshare job, or a concurrent
+    # CLI `mapshare` run, can write it), so that one must stay live.
+    # Referenced through the `jobs_module` import (not a direct
+    # `from .jobs import explore_available`) so tests that monkeypatch
+    # `garmin_outreach.serve.jobs.explore_available` before calling
+    # `create_app()` still take effect here.
+    app.state.explore_available = jobs_module.explore_available()
     return app
 
 
@@ -148,6 +199,13 @@ def run(
         workers=1,
         reload=False,
         access_log=False,
+        # Bounds Ctrl-C: without this, uvicorn's default graceful shutdown
+        # waits (`timeout=None`, i.e. forever) for every in-flight response
+        # to finish on its own, and `GET /api/events` is a deliberately
+        # unbounded stream that never finishes by itself -- an open browser
+        # tab would otherwise hang shutdown indefinitely. 2s is generous for
+        # the SSE generator's `finally` (queue unsubscribe, no I/O) to run.
+        timeout_graceful_shutdown=2,
     )
     server = uvicorn.Server(config)
     if open_browser:

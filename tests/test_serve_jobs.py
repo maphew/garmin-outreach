@@ -513,38 +513,14 @@ def _job_config_from_html(html: str) -> dict:
     return json.loads(match.group(1))
 
 
-def test_job_config_running_is_false_when_no_job_active(tmp_path):
-    response = _client(_app(tmp_path)).get("/")
-    assert response.status_code == 200
-    assert _job_config_from_html(response.text)["running"] is False
-
-
-def test_job_config_running_is_true_while_a_job_is_in_progress(tmp_path, monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-
-    def _stub(data_dir, **kwargs):
-        started.set()
-        assert release.wait(timeout=5), "test did not release the stub in time"
-        return {"output": {}}
-
-    monkeypatch.setattr(services_module, "run_build", _stub)
+def test_job_config_contains_only_the_csrf_token(tmp_path):
+    # `config.running` was removed once jobs.js stopped polling GET
+    # /api/jobs on load (live updates now come from GET /api/events) -- this
+    # pins the shape down to what's actually still consumed.
     app = _app(tmp_path)
-    client = _client(app)
-    headers = _job_headers(app.state.job_csrf_token)
-
-    response = client.post("/api/jobs/build", headers=headers, content=b"{}")
-    assert response.status_code == 202
-    assert started.wait(timeout=5)
-
-    dashboard_response = client.get("/")
-    assert _job_config_from_html(dashboard_response.text)["running"] is True
-
-    release.set()
-    _wait_for_idle(client)
-
-    dashboard_after = client.get("/")
-    assert _job_config_from_html(dashboard_after.text)["running"] is False
+    response = _client(app).get("/")
+    assert response.status_code == 200
+    assert _job_config_from_html(response.text) == {"token": app.state.job_csrf_token}
 
 
 # --- scrub_message (docs/spec-serve-ui.md section 7/8) ---------------------

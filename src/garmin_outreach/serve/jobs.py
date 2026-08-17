@@ -6,9 +6,10 @@ in `garmin_outreach.services` (`run_build`/`run_mapshare`/`run_explore_http`),
 which in turn own the interprocess writer lock (`garmin_outreach.locking`).
 This keeps CLI and UI behavior from drifting apart.
 
-SSE (phase 4) is intentionally not built here: job state is exposed via a
-polling-friendly JSON snapshot (`JobRunner.snapshot()`), consumed by
-`GET /api/jobs`.
+Job state is exposed both via a polling-friendly JSON snapshot
+(`JobRunner.snapshot()`, consumed by `GET /api/jobs`) and, when an
+`event_bus` is supplied, pushed live to `GET /api/events` (phase 4,
+`events.py`) on job start, mapshare progress, and completion.
 
 Threading model: `services` module is imported (not its individual
 functions) so tests can monkeypatch `garmin_outreach.services.run_build`
@@ -17,6 +18,7 @@ etc. and have this module's calls pick up the stub.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -29,6 +31,7 @@ from typing import Any
 
 from .. import services
 from ..mapshare import feed_url_for
+from .events import EventBus
 
 # --- CLI-default job parameters (docs/spec-serve-ui.md section 7 Phase B) --
 
@@ -286,11 +289,22 @@ class JobRunner:
     cancelled (docs/spec-serve-ui.md section 7 Phase B).
     """
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, *, event_bus: EventBus | None = None) -> None:
         self.data_dir = Path(data_dir)
         self._lock = threading.Lock()
         self._current: _Job | None = None
         self._last: dict[str, dict[str, Any]] = {}
+        self._event_bus = event_bus
+
+    def _publish(self, event: dict[str, Any]) -> None:
+        # A dying/misbehaving event bus must never break job execution --
+        # this is called from the worker thread (progress/completion) and
+        # from the request-handling thread (job start), and both call
+        # sites must be able to trust it can't raise.
+        if self._event_bus is None:
+            return
+        with contextlib.suppress(Exception):
+            self._event_bus.publish(event)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -323,6 +337,10 @@ class JobRunner:
                 if self._current is job:
                     self._current = None
             raise
+        # Published only once the worker thread has actually started (never
+        # on the roll-back path above): docs/spec-serve-ui.md section 7
+        # Phase B SSE contract, "on job start".
+        self._publish({"kind": job.kind, "type": "job", "snapshot": accepted_snapshot})
         return True, accepted_snapshot
 
     def _progress_callback(self, job: _Job) -> Callable[[dict], None]:
@@ -333,9 +351,16 @@ class JobRunner:
             # windows-done count the dashboard shows.
             if event.get("stage") != "window":
                 return
+            snapshot: dict[str, Any] | None = None
             with self._lock:
                 if self._current is job:
                     job.windows_done += 1
+                    snapshot = _snapshot(job)
+            if snapshot is not None:
+                # Published outside the lock: `EventBus.publish()` only
+                # schedules a loop callback (`call_soon_threadsafe`), but
+                # there is no reason to hold the runner's lock across it.
+                self._publish({"type": "progress", "snapshot": snapshot})
 
         return _callback
 
@@ -362,8 +387,14 @@ class JobRunner:
             job.state = final_state
             job.finished_utc = _now_iso()
             job.detail = detail
-            self._last[job.kind] = _snapshot(job)
+            final_snapshot = _snapshot(job)
+            self._last[job.kind] = final_snapshot
             if self._current is job:
                 self._current = None
+        # "on completion" (docs/spec-serve-ui.md section 7 Phase B SSE
+        # contract) -- published even on the KeyboardInterrupt/SystemExit
+        # reraise path below, since `_current`/`_last` are already final by
+        # this point regardless.
+        self._publish({"kind": job.kind, "type": "job", "snapshot": final_snapshot})
         if reraise is not None:
             raise reraise

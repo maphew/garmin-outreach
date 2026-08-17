@@ -1,46 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Dashboard - garmin-outreach{% endblock %}
 {% block content %}
-<section>
-  <h2>Freshness</h2>
-  <p>State: <strong>{{ summary["freshness"]["state"] }}</strong></p>
-  {% if freshness_command %}
-  <p>Fix: <code>{{ freshness_command }}</code></p>
-  {% endif %}
-  {% if summary["freshness"]["mapshare_last_success_utc"] %}
-  <p>MapShare last successful sync (UTC): <code>{{ summary["freshness"]["mapshare_last_success_utc"] }}</code></p>
-  {% endif %}
-</section>
-
-<section>
-  <h2>Layers</h2>
-  <table>
-    <thead>
-      <tr><th>Layer</th><th>Features</th></tr>
-    </thead>
-    <tbody>
-      {% for name in layers %}
-      <tr>
-        <td>{{ name }}</td>
-        <td>{{ summary["layers"].get(name, "no data") }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-
-<section>
-  <h2>Capabilities</h2>
-  {% if summary["capabilities"]["geojson_available"] %}
-  <p>GeoJSON exports are available ({{ summary["capabilities"]["layers_present"] | length }} layer(s)).</p>
-  {% else %}
-  <p>
-    GeoJSON exports are not available. Run
-    <code>garmin-outreach build --formats geojson</code>
-    (or the default formats, which include geojson) to enable them.
-  </p>
-  {% endif %}
-</section>
+{% include "_summary_section.html" %}
 
 <section>
   <h2>Inputs</h2>
@@ -59,32 +20,7 @@
   {% endif %}
 </section>
 
-<section id="jobs">
-  <h2>Jobs</h2>
-  <p id="job-status">
-    {% if jobs["current"] %}
-    {{ jobs["current"]["kind"] }}: {{ jobs["current"]["state"] }} (started {{ jobs["current"]["started_utc"] }}{% if jobs["current"]["progress"] %}, windows done {{ jobs["current"]["progress"]["windows_done"] }}{% endif %})
-    {% elif jobs["last"] %}
-    {% for kind, snapshot in jobs["last"].items() %}
-    last {{ kind }}: {{ snapshot["state"] }} (finished {{ snapshot["finished_utc"] }}){% if snapshot["detail"] %} -- {{ snapshot["detail"] }}{% endif %}<br>
-    {% endfor %}
-    {% else %}
-    No job has run yet.
-    {% endif %}
-  </p>
-  <p>
-    <button type="button" id="job-build-button" data-job-kind="build">Build</button>
-    <button type="button" id="job-mapshare-button" data-job-kind="mapshare" {% if not jobs["mapshare_available"] %}disabled{% endif %}>MapShare sync</button>
-    <button type="button" id="job-explore-button" data-job-kind="explore" {% if not jobs["explore_available"] %}disabled{% endif %}>Explore export</button>
-  </p>
-  <p class="job-hint">Jobs run in the background; closing the server (Ctrl-C) abandons in-flight network work.</p>
-  {% if not jobs["mapshare_available"] %}
-  <p class="job-hint">MapShare sync disabled: {{ jobs["mapshare_hint"] }}</p>
-  {% endif %}
-  {% if not jobs["explore_available"] %}
-  <p class="job-hint">Explore export disabled: {{ jobs["explore_hint"] }}</p>
-  {% endif %}
-</section>
-<script type="application/json" id="job-config">{{ {"token": job_csrf_token, "running": jobs["running"]} | tojson }}</script>
+{% include "_jobs_section.html" %}
+<script type="application/json" id="job-config">{{ {"token": job_csrf_token} | tojson }}</script>
 <script src="/static/jobs.js"></script>
 {% endblock %}

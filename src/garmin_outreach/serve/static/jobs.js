@@ -1,18 +1,21 @@
-// Dashboard "Jobs" section (docs/spec-serve-ui.md section 7 Phase B).
+// Dashboard "Jobs" section (docs/spec-serve-ui.md section 7 Phase B/4).
 // CSP-clean by construction: no inline handlers, no eval, no HTML-string
 // interpolation -- only addEventListener and textContent. Not
 // content-hashed -- served with Cache-Control: no-store, which is correct
 // for a file that can change on re-vendor/upgrade.
 //
-// SSE (phase 4) is intentionally not used here: after a POST accepted or
-// conflicted, this polls GET /api/jobs every 2s while state is "running"
-// and reloads the page once it finishes, to pick up refreshed freshness /
-// layer counts. Deliberately dumb by design (see spec phase 4 note).
+// Live status updates (state changes, mapshare progress, completion) come
+// from the SSE connection Datastar opens via `data-init="@get('/api/events')"`
+// on the #jobs section (see _jobs_section.html) -- GET /api/events patches
+// #job-status directly, so this file no longer polls GET /api/jobs itself.
+// Its only remaining job is the click -> POST -> immediate-feedback path
+// (Datastar does not perform the job-triggering POSTs; jobs.js keeps doing
+// that so the CSRF header and bounded-param body stay under this project's
+// control rather than an expression in an HTML attribute).
 (function () {
   "use strict";
 
   var JOB_HEADER = "X-Garmin-Outreach-Job";
-  var POLL_INTERVAL_MS = 2000;
 
   var configEl = document.getElementById("job-config");
   var statusEl = document.getElementById("job-status");
@@ -21,8 +24,6 @@
   }
   var config = JSON.parse(configEl.textContent);
   var token = config.token;
-
-  var pollHandle = null;
 
   function renderSnapshot(snapshot) {
     if (!statusEl) {
@@ -55,37 +56,6 @@
     statusEl.textContent = "error (" + status + "): " + text;
   }
 
-  function stopPolling() {
-    if (pollHandle !== null) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
-  }
-
-  function pollUntilFinished() {
-    stopPolling();
-    pollHandle = setInterval(function () {
-      fetch("/api/jobs", { credentials: "same-origin" })
-        .then(function (response) {
-          return response.json();
-        })
-        .then(function (body) {
-          var current = body.current;
-          if (current) {
-            renderSnapshot(current);
-          }
-          if (!current || current.state !== "running") {
-            stopPolling();
-            window.location.reload();
-          }
-        })
-        .catch(function () {
-          // A transient poll failure should not wedge the UI; the next
-          // tick tries again, and a page reload always recovers.
-        });
-    }, POLL_INTERVAL_MS);
-  }
-
   // fetch() cannot set Sec-Fetch-Site itself (the user agent manages that
   // header), but the custom job header below is ours to add.
   function postJob(kind) {
@@ -104,8 +74,9 @@
       })
       .then(function (result) {
         if (result.status === 202 || result.status === 409) {
+          // Immediate feedback; the SSE stream takes over from here for
+          // every subsequent state/progress change, including completion.
           renderSnapshot(result.body);
-          pollUntilFinished();
         } else {
           renderError(result.status, result.body);
         }
@@ -120,11 +91,4 @@
       postJob(button.dataset.jobKind);
     });
   });
-
-  // A page loaded while a job is already running (e.g. someone else started
-  // it, or this is a reload mid-job) never sees a click -- start polling
-  // immediately so its status still shows up without one.
-  if (config.running) {
-    pollUntilFinished();
-  }
 })();

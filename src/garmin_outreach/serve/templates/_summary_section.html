@@ -1,0 +1,51 @@
+{# Shared by dashboard.html (full page render) and views._render_summary_html
+   (the SSE patch fragment served by GET /api/events on every "job" event --
+   start and completion, docs/spec-serve-ui.md section 7 Phase 4). Keeping
+   this in its own include, wrapped in a single patch target, is the same
+   "single source" reasoning as _job_status.html: whatever HTML the initial
+   page ships with here must be byte-for-byte what a
+   `datastar-patch-elements` event replaces it with. Buttons and the
+   #job-config/CSRF token stay outside this div on purpose -- a patch that
+   replaced them would kill jobs.js's click listeners. #}
+<div id="summary-live">
+<section>
+  <h2>Freshness</h2>
+  <p>State: <strong>{{ summary["freshness"]["state"] }}</strong></p>
+  {% if freshness_command %}
+  <p>Fix: <code>{{ freshness_command }}</code></p>
+  {% endif %}
+  {% if summary["freshness"]["mapshare_last_success_utc"] %}
+  <p>MapShare last successful sync (UTC): <code>{{ summary["freshness"]["mapshare_last_success_utc"] }}</code></p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Layers</h2>
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Features</th></tr>
+    </thead>
+    <tbody>
+      {% for name in layers %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>{{ summary["layers"].get(name, "no data") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Capabilities</h2>
+  {% if summary["capabilities"]["geojson_available"] %}
+  <p>GeoJSON exports are available ({{ summary["capabilities"]["layers_present"] | length }} layer(s)).</p>
+  {% else %}
+  <p>
+    GeoJSON exports are not available. Run
+    <code>garmin-outreach build --formats geojson</code>
+    (or the default formats, which include geojson) to enable them.
+  </p>
+  {% endif %}
+</section>
+</div>

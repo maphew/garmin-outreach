@@ -7,21 +7,40 @@ Jinja2's default autoescape (no `|safe`, no `Markup`).
 
 from __future__ import annotations
 
+import asyncio
 import importlib.resources as resources
 import os
 import re
 from pathlib import PurePosixPath
 
+from datastar_py.sse import ServerSentEventGenerator
+from datastar_py.starlette import DatastarResponse
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.types import Receive, Scope, Send
 
 from . import jobs
 from .artifacts import LAYERS
+from .events import EventBus
+from .security import _ALLOWED_SEC_FETCH_SITE as _GET_ALLOWED_SEC_FETCH_SITE
 from .security import BASELINE_HEADERS, check_job_csrf
 
 _STATIC_PACKAGE = "garmin_outreach.serve"
 _STATIC_RESOURCE_NAME = "static"
+
+# Default keepalive interval for GET /api/events (docs/spec-serve-ui.md
+# section 7 Phase B SSE contract, "~15 s"). `create_app(sse_keepalive_seconds=...)`
+# overrides this per-app, which tests use to keep the keepalive assertion fast.
+DEFAULT_SSE_KEEPALIVE_SECONDS = 15.0
+
+# A bare SSE comment line -- protocol-legal SSE, but deliberately not a
+# datastar-py protocol event (there is no keepalive helper on
+# `ServerSentEventGenerator`; hand-formatting only this inert framing line,
+# never an actual `datastar-patch-*` event, keeps the "protocol events go
+# through the SDK" rule from docs/spec-serve-ui.md section 7 Phase B intact).
+_SSE_KEEPALIVE_COMMENT = ": keepalive\n\n"
 
 # Point vs. line rendering hint for map.js, mirrored from docs/spec-serve-ui.md
 # section 6/8 -- kept next to the registry rather than duplicated client-side.
@@ -81,14 +100,49 @@ def _jobs_view_state(request: Request) -> dict:
     runner: jobs.JobRunner = request.app.state.job_runner
     snapshot = runner.snapshot()
     return {
+        # Re-checked on every render: `mapshare-state.json` can change
+        # mid-session (this server's own mapshare job, or a concurrent CLI
+        # `mapshare` run, can write it) -- unlike `explore_available` below.
         "mapshare_available": jobs.mapshare_available(store.data_dir),
         "mapshare_hint": jobs.MAPSHARE_UNAVAILABLE_HINT,
-        "explore_available": jobs.explore_available(),
+        # Cached at app-creation time (`app.py::create_app`): whether the
+        # `browser` extra's cookie reader is importable is a
+        # process-lifetime-stable fact, so a per-render `importlib` scan
+        # would be pure overhead.
+        "explore_available": request.app.state.explore_available,
         "explore_hint": jobs.EXPLORE_UNAVAILABLE_HINT,
         "current": snapshot["current"],
         "last": snapshot["last"],
-        "running": snapshot["current"] is not None and snapshot["current"]["state"] == "running",
     }
+
+
+def _render_job_status_html(request: Request) -> str:
+    """Render the `#job-status` fragment shared by the dashboard's full page
+    render (`_jobs_section.html` includes `_job_status.html`) and every
+    `GET /api/events` patch (`api_events` below) -- one source of truth so
+    the two can never drift (docs/spec-serve-ui.md section 7 Phase B).
+    """
+    template = request.app.state.templates.get_template("_job_status.html")
+    return template.render(jobs=_jobs_view_state(request))
+
+
+def _render_summary_html(request: Request) -> str:
+    """Render the `#summary-live` fragment (`_summary_section.html`) from a
+    freshly re-read `shaped_summary()` -- freshness state, layer counts, and
+    capabilities. Shared by `dashboard()`'s full page render and every
+    `GET /api/events` "job" patch (`api_events` below), same one-source-of-
+    truth reasoning as `_render_job_status_html` above (docs/spec-serve-ui.md
+    section 7 Phase B/4: "on completion push refreshed fragments" so a tab
+    left open across a job run does not show stale freshness/layer counts).
+    """
+    store = request.app.state.artifact_store
+    summary = store.shaped_summary()
+    template = request.app.state.templates.get_template("_summary_section.html")
+    return template.render(
+        summary=summary,
+        layers=LAYERS,
+        freshness_command=_freshness_command(summary["freshness"]["state"]),
+    )
 
 
 def dashboard(request: Request) -> HTMLResponse:
@@ -255,6 +309,152 @@ async def api_jobs_explore(request: Request) -> Response:
 def api_jobs_snapshot(request: Request) -> JSONResponse:
     runner: jobs.JobRunner = request.app.state.job_runner
     return JSONResponse(runner.snapshot())
+
+
+class _AlwaysReleasingDatastarResponse(DatastarResponse):
+    """`DatastarResponse` that unconditionally releases an `/api/events`
+    subscriber slot when its ASGI `__call__` returns *or raises* -- covering
+    a gap `background=` alone does not (review finding 7): Starlette's
+    `StreamingResponse.__call__` only awaits `self.background` on the
+    success path, and skips it whenever `send()` itself raises (verified
+    empirically against the vendored Starlette version in this project's
+    toolchain). That matters here because a response cancelled/aborted
+    before the very first `send()` call -- i.e. before `_stream()`'s async
+    generator body has executed even once -- never reaches that generator's
+    own `finally` either (an async generator's body does not start running
+    until its first `__anext__()`), so neither release path would otherwise
+    fire and the slot would leak until CPython's async-generator finalizer
+    happens to garbage-collect it, at some unbounded later time. Wrapping
+    the whole ASGI call in a plain `try/finally` here is unconditional
+    regardless of *where* in that call `send()`/iteration fails.
+    `background=` is still passed through to the base class as a second,
+    now-redundant release path (`EventBus.unsubscribe()`'s `discard()` makes
+    a double release harmless) -- kept because it is one line and free
+    insurance against a future refactor of this class.
+    """
+
+    def __init__(
+        self, *args: object, bus: EventBus, queue: asyncio.Queue, **kwargs: object
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._release_bus = bus
+        self._release_queue = queue
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._release_bus.unsubscribe(self._release_queue)
+
+
+async def api_events(request: Request) -> Response:
+    """GET /api/events -- SSE job-state stream (docs/spec-serve-ui.md
+    section 7 Phase B "SSE contract").
+
+    Every connect (including a reconnect after a dropped stream) first
+    receives an authoritative full-state patch of `#job-status`, so a
+    missed event can never wedge the UI -- the client just resyncs on the
+    next connection. From then on, each event published to the bus (job
+    start, mapshare progress, completion) triggers exactly one more
+    re-render of that same fragment; idempotent by construction, so the
+    bus's queue-overflow coalescing (dropping intermediate events under
+    backpressure) is always safe. A "job" event (start or completion, never
+    "progress") additionally triggers a second patch of `#summary-live`
+    (freshness/layers/capabilities) from a fresh `shaped_summary()` read, so
+    a tab left open across a job run does not show stale freshness/layer
+    counts (docs/spec-serve-ui.md section 7 Phase 4). Idle connections get a
+    raw SSE comment line every `sse_keepalive_seconds` (app.state, default
+    `DEFAULT_SSE_KEEPALIVE_SECONDS`) so intermediaries do not time the
+    connection out.
+
+    Same-origin GET only; no CSRF handshake is needed (unlike the job POST
+    routes) -- the host allowlist and security-headers middleware already
+    wrap this route like every other. `HEAD` is rejected outright (405): a
+    HEAD request holding a subscriber slot open forever would let a hostile
+    page pin the cap for free.
+    """
+    if request.method == "HEAD":
+        return JSONResponse(
+            {"error": "method not allowed"},
+            status_code=405,
+            headers={"Cache-Control": "no-store"},
+        )
+    # Cap-protection only, not a confidentiality control -- contrast
+    # `check_job_csrf`'s POST defense, which also gates a *mutation* an
+    # attacker's page could otherwise trigger. A GET here only opens a
+    # stream the requesting page can already read same-origin, so an
+    # *absent* `Sec-Fetch-Site` header (older browsers, non-fetch/
+    # EventSource clients) is accepted rather than rejected -- unlike the
+    # POST job routes' stricter all-three-checks defense. A cross-site page
+    # sending this request (e.g. a `no-cors` `fetch`/`EventSource`, which
+    # browsers do send with `Sec-Fetch-Site: cross-site`) is rejected purely
+    # to stop it from pinning the subscriber cap; it can read no response
+    # data either way (opaque `no-cors` response).
+    sec_fetch_site = request.headers.get("sec-fetch-site")
+    if sec_fetch_site is not None and sec_fetch_site not in _GET_ALLOWED_SEC_FETCH_SITE:
+        return JSONResponse(
+            {"error": "request rejected"},
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    bus: EventBus = request.app.state.event_bus
+    queue = bus.subscribe()
+    if queue is None:
+        # Datastar's default `retryDuration`/"auto" retry mode does not
+        # retry a `503` (or a clean `200` stream end) -- an already-open tab
+        # that lands here needs a manual reload once a slot frees up, not
+        # just time. `no-transform` alongside `no-store` for consistency
+        # with the streaming response's own Cache-Control below.
+        return JSONResponse(
+            {"error": "too many /api/events connections"},
+            status_code=503,
+            headers={"Cache-Control": "no-store, no-transform"},
+        )
+    keepalive_seconds = getattr(
+        request.app.state, "sse_keepalive_seconds", DEFAULT_SSE_KEEPALIVE_SECONDS
+    )
+
+    async def _stream():
+        try:
+            yield ServerSentEventGenerator.patch_elements(_render_job_status_html(request))
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=keepalive_seconds)
+                except TimeoutError:
+                    yield _SSE_KEEPALIVE_COMMENT
+                    continue
+                yield ServerSentEventGenerator.patch_elements(_render_job_status_html(request))
+                if event.get("type") == "job":
+                    # Blocking file IO (same as `dashboard()`'s own
+                    # `shaped_summary()` call) -- off the loop via
+                    # `to_thread` since, unlike a sync route handler,
+                    # nothing runs this async generator in a threadpool for
+                    # us.
+                    summary_html = await asyncio.to_thread(_render_summary_html, request)
+                    yield ServerSentEventGenerator.patch_elements(summary_html)
+        finally:
+            # Disconnect (CancelledError from the client closing the
+            # connection) or any other exit path -- a leaked subscriber
+            # slot would eventually starve every other client via the
+            # bus's subscriber cap. Kept even though
+            # `_AlwaysReleasingDatastarResponse.__call__` below also
+            # releases unconditionally: this is the path that actually
+            # fires for every ordinary disconnect, and
+            # `EventBus.unsubscribe()` tolerates the double call.
+            bus.unsubscribe(queue)
+
+    return _AlwaysReleasingDatastarResponse(
+        _stream(),
+        # `DatastarResponse.default_headers` ships `Cache-Control: no-cache`;
+        # explicitly override to `no-store, no-transform` per
+        # docs/spec-serve-ui.md section 8 (SecurityHeadersMiddleware's own
+        # `Cache-Control` default is `setdefault`-applied, so this value
+        # survives that middleware layer unchanged).
+        headers={"Cache-Control": "no-store, no-transform"},
+        background=BackgroundTask(bus.unsubscribe, queue),
+        bus=bus,
+        queue=queue,
+    )
 
 
 def _read_static_bytes(filename: str) -> bytes | None:

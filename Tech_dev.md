@@ -15,7 +15,7 @@ Version `0.1.0` is a working Python 3.11+ CLI with:
 - conservative derived-trip generation; and
 - GeoPackage, GeoJSON, and Shapefile output.
 
-Current verification covers 205 passing tests, Ruff, a locked uv environment on Python 3.11,
+Current verification covers 223 passing tests, Ruff, a locked uv environment on Python 3.11,
 generated-layer reads as `EPSG:4326`, Playwright Chromium launch, and the intended signed-out
 headless Explore failure. The authenticated Explore POST has not yet received broad real-account
 validation, so the browser integration remains experimental.
@@ -27,14 +27,23 @@ whatever `summary.json`/`mapshare-state.json` already say. The map is offline-on
 is vendored locally and the page never makes external tile requests.
 
 A Jobs section on the dashboard triggers `build`/`mapshare`/`explore` through the same
-`services.run_*` orchestration the CLI uses (single-flight per process, daemon worker threads, no
-SSE yet -- the dashboard polls `GET /api/jobs` every 2s while a job is `running` and reloads on
-completion). Every job POST is guarded by cross-site request defenses (`Sec-Fetch-Site`, a
-per-process custom header, `Content-Type: application/json`); job POST bodies accept only bounded
-`trip_gap_hours`/`max_speed_kmh`/`jump_km` overrides, never an identifier, feed URL, password, or
-cookie material from the browser. Scripting `POST /api/jobs/*` from outside a browser (curl,
-httpx) requires forging a `Sec-Fetch-Site` value and the per-process token, so a bare 403 there is
-the intended policy, not a bug.
+`services.run_*` orchestration the CLI uses (single-flight per process, daemon worker threads).
+Live updates -- job state changes, mapshare progress, and a refreshed freshness/layers/capabilities
+summary -- stream over `GET /api/events` (Server-Sent Events via Datastar) rather than polling.
+That route responds `Cache-Control: no-store, no-transform`; a `503` (subscriber cap reached) or a
+clean stream end is *not* retried by Datastar's default "auto" retry mode, so a tab stuck on either
+needs a manual reload, not just time. Every job POST is guarded by cross-site request defenses
+(`Sec-Fetch-Site`, a per-process custom header, `Content-Type: application/json`); job POST bodies
+accept only bounded `trip_gap_hours`/`max_speed_kmh`/`jump_km` overrides, never an identifier, feed
+URL, password, or cookie material from the browser. Scripting `POST /api/jobs/*` from outside a
+browser (curl, httpx) requires forging a `Sec-Fetch-Site` value and the per-process token, so a
+bare 403 there is the intended policy, not a bug. `GET /api/events` applies a weaker, cap-protection-only
+version of that same check (a present-but-cross-site `Sec-Fetch-Site` is rejected; an absent header
+is allowed, unlike the POST routes, since a GET response carries no attacker-controlled mutation);
+`HEAD /api/events` is rejected outright (405) so it cannot pin a subscriber slot open forever.
+`garmin-outreach serve`'s Ctrl-C shutdown is bounded even with a browser tab's SSE stream still
+open -- `uvicorn.Config(timeout_graceful_shutdown=2)` in `app.py::run()` caps the wait instead of
+uvicorn's default (unbounded) graceful-shutdown behavior.
 
 ## Fast start
 
@@ -101,8 +110,9 @@ The central design choice is that acquisition and conversion are separate. Netwo
 | `src/garmin_outreach/serve/artifacts.py` | Read-only, tolerant adapter that shapes `data/output/summary.json` and `mapshare-state.json` for the UI |
 | `src/garmin_outreach/serve/security.py` | Host allowlist middleware, security-header middleware, CSP string, and job-route CSRF defenses (`check_job_csrf`) |
 | `src/garmin_outreach/serve/jobs.py` | In-process single-flight job runner (`build`/`mapshare`/`explore`) over `services.run_*`, bounded-param validation, mapshare/explore capability detection, absolute-path scrubbing for job failure details |
-| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/messages`, `/map`, `/api/summary`, `/api/layers/{name}.geojson`, `/api/jobs*`, static assets, 404/500 fallbacks |
-| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard (incl. Jobs section), messages timeline, and map (autoescaped, no raw `summary.json` fields) |
+| `src/garmin_outreach/serve/events.py` | In-process pub/sub `EventBus` bridging job-runner worker threads to `GET /api/events` SSE connections: per-subscriber bounded queue with progress-coalescing on overflow, subscriber cap, loop-safe `publish()` from worker threads |
+| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/messages`, `/map`, `/api/summary`, `/api/layers/{name}.geojson`, `/api/jobs*`, `/api/events` (SSE), static assets, 404/500 fallbacks |
+| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard (incl. Jobs section), messages timeline, and map (autoescaped, no raw `summary.json` fields). `_job_status.html` and `_summary_section.html` are shared fragments: each is rendered once for the initial page and again, byte-for-byte, as a `GET /api/events` `datastar-patch-elements` target (`#job-status`, `#summary-live`) |
 | `src/garmin_outreach/serve/static/` | Vendored, content-hashed Datastar and MapLibre GL JS bundles plus `app.css`/`map.js`/`jobs.js`. The map is offline-only: MapLibre is vendored and no external tile requests are ever made. |
 | `tests/fixtures/` | Synthetic, non-private Garmin-like KML and GPX |
 | `tests/` | Parser, trip, archive, sync-security, idempotency, and writer tests |
