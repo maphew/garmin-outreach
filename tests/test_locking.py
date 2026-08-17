@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import garmin_outreach.cli as cli
+import garmin_outreach.services as services
 from garmin_outreach import locking
 from garmin_outreach.locking import writer_lock
 
@@ -165,9 +166,22 @@ class _RecordingLock:
         return False
 
 
+# ingest keeps its own inline `writer_lock`/`rebuild` in cli.py (there is no
+# UI ingest job); build/mapshare/explore(http) now lock and rebuild via
+# garmin_outreach.services, the single outermost mutating boundary shared
+# with the future UI job runner.
+_LOCK_MODULE_BY_COMMAND = {
+    "ingest": cli,
+    "mapshare": services,
+    "explore": services,
+    "build": services,
+}
+
+
 @pytest.mark.parametrize("command", ["ingest", "mapshare", "explore", "build"])
 def test_cli_records_lock_label_and_runs_command_inside_it(tmp_path, monkeypatch, command):
     events = []
+    lock_module = _LOCK_MODULE_BY_COMMAND[command]
 
     def make_lock(data_dir, *, label):
         return _RecordingLock(events, data_dir, label=label)
@@ -176,8 +190,8 @@ def test_cli_records_lock_label_and_runs_command_inside_it(tmp_path, monkeypatch
         events.append(("rebuild", data_dir))
         return {"rebuilt": True}
 
-    monkeypatch.setattr(cli, "writer_lock", make_lock)
-    monkeypatch.setattr(cli, "rebuild", fake_rebuild)
+    monkeypatch.setattr(lock_module, "writer_lock", make_lock)
+    monkeypatch.setattr(lock_module, "rebuild", fake_rebuild)
 
     argv = ["--data-dir", str(tmp_path), command]
     side_effect_name = None
@@ -204,7 +218,7 @@ def test_cli_records_lock_label_and_runs_command_inside_it(tmp_path, monkeypatch
             events.append((side_effect_name, "called"))
             return {"new_features": 0}
 
-        monkeypatch.setattr(cli, "sync_mapshare", fake_sync_mapshare)
+        monkeypatch.setattr(services, "sync_mapshare", fake_sync_mapshare)
     elif command == "explore":
         side_effect_name = "browserless_export"
 
@@ -212,7 +226,7 @@ def test_cli_records_lock_label_and_runs_command_inside_it(tmp_path, monkeypatch
             events.append((side_effect_name, "called"))
             return {"exported": []}
 
-        monkeypatch.setattr(cli, "browserless_export", fake_browserless_export)
+        monkeypatch.setattr(services, "browserless_export", fake_browserless_export)
 
     cli.main(argv)
 
@@ -229,14 +243,21 @@ def test_cli_records_lock_label_and_runs_command_inside_it(tmp_path, monkeypatch
         assert inner.index(side_effect_event) < inner.index(("rebuild", tmp_path))
 
 
-def test_cli_exits_2_with_error_message_when_lock_is_held(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("command", ["ingest", "build"])
+def test_cli_exits_2_with_error_message_when_lock_is_held(tmp_path, monkeypatch, capsys, command):
     def raising_lock(data_dir, *, label):
         raise RuntimeError(f"Another garmin-outreach process is already writing to {data_dir}")
 
-    monkeypatch.setattr(cli, "writer_lock", raising_lock)
+    monkeypatch.setattr(_LOCK_MODULE_BY_COMMAND[command], "writer_lock", raising_lock)
+
+    argv = ["--data-dir", str(tmp_path), command]
+    if command == "ingest":
+        gpx = tmp_path / "track.gpx"
+        gpx.write_text("<gpx/>", encoding="utf-8")
+        argv.append(str(gpx))
 
     with pytest.raises(SystemExit) as excinfo:
-        cli.main(["--data-dir", str(tmp_path), "build"])
+        cli.main(argv)
 
     assert excinfo.value.code == 2
     captured = capsys.readouterr()

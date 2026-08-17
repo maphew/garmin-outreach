@@ -7,14 +7,15 @@ from pathlib import Path
 import pytest
 
 import garmin_outreach.cli as cli
+import garmin_outreach.services as services
 
 
-def _fake_rebuild(monkeypatch, calls):
+def _fake_rebuild(monkeypatch, calls, *, module=cli):
     def rebuild(data_dir, *, formats, gap_hours, max_speed_kmh, jump_km):
         calls.append(data_dir)
         return {"rebuilt": True}
 
-    monkeypatch.setattr(cli, "rebuild", rebuild)
+    monkeypatch.setattr(module, "rebuild", rebuild)
 
 
 def test_ingest_no_build_does_not_rebuild(tmp_path, monkeypatch):
@@ -31,8 +32,8 @@ def test_ingest_no_build_does_not_rebuild(tmp_path, monkeypatch):
 
 def test_mapshare_no_build_does_not_rebuild(tmp_path, monkeypatch):
     calls = []
-    _fake_rebuild(monkeypatch, calls)
-    monkeypatch.setattr(cli, "sync_mapshare", lambda *args, **kwargs: {"new_features": 0})
+    _fake_rebuild(monkeypatch, calls, module=services)
+    monkeypatch.setattr(services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 0})
 
     cli.main(["--data-dir", str(tmp_path), "mapshare", "sample", "--no-build"])
 
@@ -41,8 +42,8 @@ def test_mapshare_no_build_does_not_rebuild(tmp_path, monkeypatch):
 
 def test_explore_no_build_does_not_rebuild(tmp_path, monkeypatch):
     calls = []
-    _fake_rebuild(monkeypatch, calls)
-    monkeypatch.setattr(cli, "browserless_export", lambda *args, **kwargs: {"exported": []})
+    _fake_rebuild(monkeypatch, calls, module=services)
+    monkeypatch.setattr(services, "browserless_export", lambda *args, **kwargs: {"exported": []})
 
     cli.main(["--data-dir", str(tmp_path), "explore", "--no-build"])
 
@@ -63,8 +64,8 @@ def test_ingest_without_no_build_rebuilds(tmp_path, monkeypatch):
 
 def test_mapshare_without_no_build_rebuilds(tmp_path, monkeypatch):
     calls = []
-    _fake_rebuild(monkeypatch, calls)
-    monkeypatch.setattr(cli, "sync_mapshare", lambda *args, **kwargs: {"new_features": 0})
+    _fake_rebuild(monkeypatch, calls, module=services)
+    monkeypatch.setattr(services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 0})
 
     cli.main(["--data-dir", str(tmp_path), "mapshare", "sample"])
 
@@ -73,17 +74,27 @@ def test_mapshare_without_no_build_rebuilds(tmp_path, monkeypatch):
 
 def test_explore_without_no_build_rebuilds(tmp_path, monkeypatch):
     calls = []
-    _fake_rebuild(monkeypatch, calls)
-    monkeypatch.setattr(cli, "browserless_export", lambda *args, **kwargs: {"exported": []})
+    _fake_rebuild(monkeypatch, calls, module=services)
+    monkeypatch.setattr(services, "browserless_export", lambda *args, **kwargs: {"exported": []})
 
     cli.main(["--data-dir", str(tmp_path), "explore"])
 
     assert calls == [tmp_path]
 
 
-def test_build_always_rebuilds(tmp_path, monkeypatch):
+def test_explore_browser_transport_uses_inline_lock_and_rebuild(tmp_path, monkeypatch):
     calls = []
     _fake_rebuild(monkeypatch, calls)
+    monkeypatch.setattr(cli, "capture_explore", lambda *args, **kwargs: {"exported": []})
+
+    cli.main(["--data-dir", str(tmp_path), "explore", "--transport", "browser"])
+
+    assert calls == [tmp_path]
+
+
+def test_build_always_rebuilds(tmp_path, monkeypatch):
+    calls = []
+    _fake_rebuild(monkeypatch, calls, module=services)
 
     cli.main(["--data-dir", str(tmp_path), "build"])
 
@@ -98,6 +109,7 @@ def test_unknown_command_never_reaches_rebuild(monkeypatch, capsys):
     the now-real `serve`."""
     calls = []
     _fake_rebuild(monkeypatch, calls)
+    _fake_rebuild(monkeypatch, calls, module=services)
 
     def fake_parser():
         root = argparse.ArgumentParser(prog="garmin-outreach")
@@ -134,6 +146,41 @@ def test_ingest_no_build_stdout_contract(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"archive": [{"path": str(destination), "created": True}]}
+
+
+def test_mapshare_stdout_contract_matches_service_result(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 3, "requests": 1}
+    )
+    monkeypatch.setattr(services, "rebuild", lambda *args, **kwargs: {"rebuilt": True})
+
+    cli.main(["--data-dir", str(tmp_path), "mapshare", "sample"])
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "mapshare": {"new_features": 3, "requests": 1},
+        "output": {"rebuilt": True},
+    }
+
+
+def test_mapshare_build_failure_after_acquisition_exits_2_with_cause_message(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        services, "sync_mapshare", lambda *args, **kwargs: {"new_features": 3, "requests": 1}
+    )
+
+    def failing_rebuild(*args, **kwargs):
+        raise RuntimeError("disk is full")
+
+    monkeypatch.setattr(services, "rebuild", failing_rebuild)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--data-dir", str(tmp_path), "mapshare", "sample"])
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "error: disk is full"
 
 
 def test_serve_dispatches_read_only_with_clean_stdout(tmp_path, monkeypatch, capsys):
