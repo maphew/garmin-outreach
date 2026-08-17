@@ -1,0 +1,4 @@
+# Vendored and hash-verified static assets must check out byte-exact on every
+# platform; line-ending normalization (core.autocrlf on Windows) would change
+# their SHA-256 digests recorded in VENDORED.md.
+src/garmin_outreach/serve/static/** -text
