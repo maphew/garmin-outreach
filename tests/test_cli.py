@@ -130,6 +130,14 @@ def test_unknown_command_never_reaches_rebuild(monkeypatch, capsys):
     assert json.loads(captured.out) == {}
 
 
+def test_serve_help_discloses_optional_data_jobs():
+    help_text = cli.parser().format_help()
+
+    assert "serve" in help_text
+    assert "optional data jobs" in help_text
+    assert "read-only web UI" not in help_text
+
+
 def test_invalid_formats_exits(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["--data-dir", str(tmp_path), "--formats", "bogus", "build"])

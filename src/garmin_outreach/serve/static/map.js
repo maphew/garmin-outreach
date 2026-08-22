@@ -38,7 +38,7 @@
   var DEFAULT_COLOR = "#555555";
   // Fields shown in point-layer popups, in display order. Mirrors the
   // server's PROPERTY_ALLOWLIST; textContent-only, never HTML.
-  var POPUP_FIELDS = ["name", "timestamp_utc", "event", "text", "device_name"];
+  var POPUP_FIELDS = ["name", "timestamp_utc", "event", "text"];
 
   maplibregl.setWorkerUrl(mapEl.dataset.workerUrl);
 

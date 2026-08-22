@@ -1,4 +1,4 @@
-"""Route handlers for the phase-1 read-only `serve` surface.
+"""Route handlers for the loopback-only `serve` surface.
 
 Every handler renders shaped data from `artifacts.ArtifactStore` — never the
 raw `summary.json` — and all artifact-derived text reaches templates through

@@ -1,6 +1,6 @@
 """App assembly and CLI entry point for `garmin-outreach serve`.
 
-`create_app()` builds the phase-1 read-only Starlette app
+`create_app()` builds the loopback-only Starlette app
 (docs/spec-serve-ui.md sections 5-9); `run()` is the CLI entry point that
 validates the loopback-only host, starts uvicorn as a single worker, and
 opens a browser tab only after the socket has bound.

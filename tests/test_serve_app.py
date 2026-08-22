@@ -146,6 +146,15 @@ def test_trusted_host_accepts_loopback_variants(tmp_path, host_header, path):
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "host_header",
+    ["[::1].evil", "[::1]:evil", "[::1]:", "localhost:evil", "127.0.0.1:"],
+)
+def test_trusted_host_rejects_malformed_port_or_ipv6_suffix(tmp_path, host_header):
+    response = _client(tmp_path).get("/", headers={"Host": host_header})
+    assert response.status_code == 400
+
+
 def test_static_404_carries_csp_and_no_store(tmp_path):
     response = _client(tmp_path).get("/static/does-not-exist.js")
     assert response.status_code == 404
@@ -254,7 +263,7 @@ def test_messages_renders_entries_and_escapes_xss(tmp_path):
             timestamp_utc="2026-08-01T00:00:00Z",
             text=payload,
             event=payload,
-            device_name=payload,
+            device_name="Private Device Name",
         ),
         _message_feature("m2"),  # undated
     ]
@@ -264,6 +273,7 @@ def test_messages_renders_entries_and_escapes_xss(tmp_path):
 
     assert response.status_code == 200
     assert payload not in response.text
+    assert "Private Device Name" not in response.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
     assert "2026-08-01T00:00:00Z" in response.text
     assert "no timestamp" in response.text

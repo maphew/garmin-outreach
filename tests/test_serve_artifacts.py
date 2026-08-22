@@ -459,10 +459,12 @@ def test_layer_geojson_filters_forbidden_properties(tmp_path):
         "300434065012340",
         "feature_id",
         "m1",
+        "device_name",
+        "unit-1",
     ):
         assert forbidden not in text
 
-    for allowed in ("text", "hello", "timestamp_utc", "device_name", "unit-1"):
+    for allowed in ("text", "hello", "timestamp_utc"):
         assert allowed in text
 
     parsed = json.loads(text)
@@ -572,7 +574,7 @@ def test_layer_geojson_real_pipeline_output_never_leaks_garmin_id(tmp_path):
     track_points_body = store.layer_geojson("track_points")
     assert track_points_body is not None
     assert b"garmin:" not in track_points_body
-    assert b"Test User" in track_points_body
+    assert b"Test User" not in track_points_body
 
 
 def test_layer_geojson_unknown_name_returns_none(tmp_path):
@@ -702,9 +704,8 @@ def test_messages_entry_shape_exact_and_forbidden_fields_absent(tmp_path):
         "text": "hello",
         "timestamp_utc": "2026-08-01T00:00:00Z",
         "event": "checkin",
-        "device_name": "unit-1",
     }
-    assert set(entry.keys()) == {"id", "text", "timestamp_utc", "event", "device_name"}
+    assert set(entry.keys()) == {"id", "text", "timestamp_utc", "event"}
 
 
 def test_messages_entry_id_fallback_chain(tmp_path):

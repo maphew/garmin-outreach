@@ -76,12 +76,26 @@ def _parse_host(raw_host: str) -> str | None:
         end = text.find("]")
         if end == -1:
             return None
+        suffix = text[end + 1 :]
+        if suffix and not _valid_port_suffix(suffix):
+            return None
         return text[1:end].lower() or None
     if text.count(":") > 1:
         # A bare IPv6 literal: no brackets, and therefore no port suffix.
         return text.lower()
-    host = text.split(":", 1)[0].strip()
+    host, separator, port = text.partition(":")
+    if separator and not _valid_port_suffix(f":{port}"):
+        return None
+    host = host.strip()
     return host.lower() or None
+
+
+def _valid_port_suffix(suffix: str) -> bool:
+    """Return whether an authority suffix is exactly ``:<ASCII digits>``."""
+    if not suffix.startswith(":"):
+        return False
+    port = suffix[1:]
+    return bool(port) and port.isascii() and port.isdigit()
 
 
 # --- Cross-site request defense (docs/spec-serve-ui.md section 8) ---------

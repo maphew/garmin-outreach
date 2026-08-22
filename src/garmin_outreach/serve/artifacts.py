@@ -30,7 +30,7 @@ LAYERS: tuple[str, ...] = (
 )
 
 # Fields safe to expose on the HTTP surface. Never: source_file, source_kind,
-# imei, extra_json, garmin_id, incident_id, map_display_name, latitude,
+# imei, extra_json, garmin_id, incident_id, map_display_name, device_name, latitude,
 # longitude (geometry carries position) -- see docs/spec-serve-ui.md section 8.
 # Also never: feature_id -- `Feature.stable_id()` embeds the raw garmin_id
 # (e.g. "garmin:1002:0") whenever the parser supplied one, which is exactly
@@ -39,7 +39,6 @@ PROPERTY_ALLOWLIST: frozenset[str] = frozenset(
     {
         "name",
         "timestamp_utc",
-        "device_name",
         "device_type",
         "event",
         "text",
@@ -367,9 +366,6 @@ class ArtifactStore:
                 "timestamp_utc": timestamp_utc,
                 "event": properties.get("event")
                 if isinstance(properties.get("event"), str)
-                else None,
-                "device_name": properties.get("device_name")
-                if isinstance(properties.get("device_name"), str)
                 else None,
             }
             if parsed_ts is None:

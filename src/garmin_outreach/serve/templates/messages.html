@@ -19,7 +19,6 @@
       <tr>
         <th>Timestamp (UTC)</th>
         <th>Event</th>
-        <th>Device</th>
         <th>Text</th>
       </tr>
     </thead>
@@ -27,13 +26,12 @@
       {% set ns = namespace(undated_shown=false) %}
       {% for entry in messages["entries"] %}
       {% if entry["timestamp_utc"] is none and not ns.undated_shown %}
-      <tr class="section-label"><td colspan="4"><strong>Undated</strong></td></tr>
+      <tr class="section-label"><td colspan="3"><strong>Undated</strong></td></tr>
       {% set ns.undated_shown = true %}
       {% endif %}
       <tr>
         <td>{{ entry["timestamp_utc"] if entry["timestamp_utc"] else "no timestamp" }}</td>
         <td>{{ entry["event"] if entry["event"] else "n/a" }}</td>
-        <td>{{ entry["device_name"] if entry["device_name"] else "n/a" }}</td>
         <td>{{ entry["text"] if entry["text"] else "n/a" }}</td>
       </tr>
       {% endfor %}

@@ -98,7 +98,7 @@ def parser() -> argparse.ArgumentParser:
     _add_cleanup_options(build)
 
     serve = sub.add_parser(
-        "serve", help="Run the local read-only web UI over data/ outputs (requires the ui extra)"
+        "serve", help="Run the local web UI and optional data jobs (requires the ui extra)"
     )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8477)
