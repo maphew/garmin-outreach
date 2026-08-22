@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -31,6 +33,7 @@ def sync_mapshare(
     username: str = "",
     password: str | None = None,
     imei: str | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     if chunk_days <= 0:
         raise ValueError("chunk_days must be greater than zero")
@@ -77,6 +80,16 @@ def sync_mapshare(
                     "updated_utc": _iso(datetime.now(UTC)),
                 },
             )
+            if progress is not None:
+                with contextlib.suppress(Exception):
+                    progress(
+                        {
+                            "stage": "window",
+                            "window_start_utc": _iso(cursor),
+                            "window_end_utc": _iso(window_end),
+                            "new_features": len(unseen),
+                        }
+                    )
             cursor = window_end
     return {
         "requests": requests,

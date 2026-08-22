@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - garmin-outreach{% endblock %}
+{% block content %}
+{% include "_summary_section.html" %}
+
+<section>
+  <h2>Inputs</h2>
+  <p>Input files: {{ summary["input_files"] if summary["input_files"] is not none else "unknown" }}</p>
+</section>
+
+<section>
+  <h2>Parse errors</h2>
+  <p>Count: {{ summary["parse_errors"]["count"] }}</p>
+  {% if summary["parse_errors"]["entries"] %}
+  <ul>
+    {% for entry in summary["parse_errors"]["entries"] %}
+    <li>{{ entry["file"] }} ({{ entry["category"] }})</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+{% include "_jobs_section.html" %}
+<script type="application/json" id="job-config">{{ {"token": job_csrf_token} | tojson }}</script>
+<script src="/static/jobs.js"></script>
+{% endblock %}

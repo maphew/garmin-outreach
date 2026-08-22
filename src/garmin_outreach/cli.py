@@ -10,9 +10,9 @@ from pathlib import Path
 
 from .archive import archive_file
 from .explore import capture_explore
-from .explore_http import browserless_export
-from .mapshare import sync_mapshare
+from .locking import writer_lock
 from .pipeline import rebuild
+from .services import run_build, run_explore_http, run_mapshare
 
 
 def parser() -> argparse.ArgumentParser:
@@ -96,6 +96,14 @@ def parser() -> argparse.ArgumentParser:
         _add_cleanup_options(command)
     build = next(action for action in sub.choices.values() if action.prog.endswith(" build"))
     _add_cleanup_options(build)
+
+    serve = sub.add_parser(
+        "serve", help="Run the local web UI and optional data jobs (requires the ui extra)"
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8477)
+    serve.add_argument("--open", action=argparse.BooleanOptionalAction, default=True)
+
     return root
 
 
@@ -112,26 +120,70 @@ def main(argv: list[str] | None = None) -> None:
     if invalid:
         raise SystemExit(f"Unsupported output format(s): {', '.join(sorted(invalid))}")
     try:
-        result: dict = {}
-        if args.command == "ingest":
-            archived = []
-            for path in args.files:
-                if not path.is_file():
-                    raise RuntimeError(f"Input does not exist: {path}")
-                if path.suffix.lower() not in {".kml", ".gpx"}:
-                    raise RuntimeError(f"Input must be KML or GPX: {path}")
-                destination, created = archive_file(path, args.data_dir / "raw" / "imports")
-                archived.append({"path": str(destination), "created": created})
-            result["archive"] = archived
-        elif args.command == "mapshare":
+        if args.command == "serve":
+            # Lazy import: the `ui` extra (starlette/uvicorn/jinja2/datastar-py)
+            # is optional, and importing garmin_outreach.serve.app eagerly
+            # would make every other command pay for it.
+            try:
+                from .serve.app import run
+            except ImportError as error:
+                raise RuntimeError(
+                    "The web UI is optional. Install it with `uv sync --extra ui` "
+                    "(or `pip install -e .[ui]`)."
+                ) from error
+            # Read-only: never takes the writer lock and never rebuilds.
+            run(args.data_dir, host=args.host, port=args.port, open_browser=args.open)
+            return
+        if args.command == "mapshare":
+            # Cheap pre-check, duplicated intentionally: run_mapshare() also
+            # validates the identifier, but that happens after this
+            # getpass.getpass() prompt. Without this check, `mapshare
+            # --ask-password` with no identifier prompts for a password
+            # before failing on the identifier -- an unnecessary blocking
+            # terminal prompt for a request that was always going to fail.
             if not args.identifier:
                 raise RuntimeError("Supply a MapShare identifier or set GARMIN_MAPSHARE_ID")
-            password = (
+            # Resolve the (interactively, if requested) password before
+            # taking the writer lock: getpass.getpass() blocks on terminal
+            # input, and doing that inside the lock would stall every other
+            # writer while this process waits at the prompt. Identifier
+            # validation also lives in run_mapshare() so the CLI and the UI
+            # job runner share the same check.
+            mapshare_password = (
                 getpass.getpass("MapShare password: ")
                 if args.ask_password
                 else os.environ.get("GARMIN_MAPSHARE_PASSWORD")
             )
-            result["mapshare"] = sync_mapshare(
+        result: dict = {}
+        if args.command == "ingest":
+            with writer_lock(args.data_dir, label="ingest"):
+                archived = []
+                for path in args.files:
+                    if not path.is_file():
+                        raise RuntimeError(f"Input does not exist: {path}")
+                    if path.suffix.lower() not in {".kml", ".gpx"}:
+                        raise RuntimeError(f"Input must be KML or GPX: {path}")
+                    destination, created = archive_file(path, args.data_dir / "raw" / "imports")
+                    archived.append({"path": str(destination), "created": created})
+                result["archive"] = archived
+                if not args.no_build:
+                    result["output"] = rebuild(
+                        args.data_dir,
+                        formats=formats,
+                        gap_hours=args.trip_gap_hours,
+                        max_speed_kmh=args.max_speed_kmh,
+                        jump_km=args.jump_km,
+                    )
+        elif args.command == "build":
+            result = run_build(
+                args.data_dir,
+                formats=formats,
+                gap_hours=args.trip_gap_hours,
+                max_speed_kmh=args.max_speed_kmh,
+                jump_km=args.jump_km,
+            )
+        elif args.command == "mapshare":
+            result = run_mapshare(
                 args.identifier,
                 args.data_dir,
                 start=args.start,
@@ -139,39 +191,64 @@ def main(argv: list[str] | None = None) -> None:
                 full=args.full,
                 chunk_days=args.chunk_days,
                 username=args.username,
-                password=password,
+                password=mapshare_password,
                 imei=args.imei,
+                no_build=args.no_build,
+                formats=formats,
+                gap_hours=args.trip_gap_hours,
+                max_speed_kmh=args.max_speed_kmh,
+                jump_km=args.jump_km,
             )
         elif args.command == "explore":
             export_formats = (
                 ("kml", "gpx") if args.export_formats == "both" else (args.export_formats,)
             )
             if args.transport == "http":
-                result["explore"] = browserless_export(
+                result = run_explore_http(
                     args.data_dir,
-                    formats=export_formats,
+                    export_formats=export_formats,
                     browser=args.browser,
+                    no_build=args.no_build,
+                    formats=formats,
+                    gap_hours=args.trip_gap_hours,
+                    max_speed_kmh=args.max_speed_kmh,
+                    jump_km=args.jump_km,
                 )
             else:
-                result["explore"] = capture_explore(
-                    args.data_dir,
-                    formats=export_formats,
-                    profile_dir=args.profile_dir,
-                    headless=args.headless,
-                    login_timeout_seconds=args.login_timeout,
-                    browser=args.browser,
-                    use_saved_cookies=args.use_saved_cookies,
-                )
-        if args.command == "build" or not getattr(args, "no_build", False):
-            result["output"] = rebuild(
-                args.data_dir,
-                formats=formats,
-                gap_hours=args.trip_gap_hours,
-                max_speed_kmh=args.max_speed_kmh,
-                jump_km=args.jump_km,
-            )
+                # The Playwright flow is CLI-only (no UI job for it); keep
+                # its own inline writer_lock as before.
+                with writer_lock(args.data_dir, label="explore"):
+                    result["explore"] = capture_explore(
+                        args.data_dir,
+                        formats=export_formats,
+                        profile_dir=args.profile_dir,
+                        headless=args.headless,
+                        login_timeout_seconds=args.login_timeout,
+                        browser=args.browser,
+                        use_saved_cookies=args.use_saved_cookies,
+                    )
+                    if not args.no_build:
+                        result["output"] = rebuild(
+                            args.data_dir,
+                            formats=formats,
+                            gap_hours=args.trip_gap_hours,
+                            max_speed_kmh=args.max_speed_kmh,
+                            jump_km=args.jump_km,
+                        )
         print(json.dumps(result, indent=2))
     except (RuntimeError, ValueError) as error:
+        # BuildFailedAfterAcquisition is a RuntimeError, but its `.cause` can
+        # be any exception the rebuild step raised, including a programming
+        # error (TypeError, AttributeError, ...). Printing "error: <msg>"
+        # and exiting 2 for those would hide a bug behind a clean-looking
+        # user-facing failure; only a genuinely expected RuntimeError/
+        # ValueError cause gets the friendly one-line treatment.
+        from .services import BuildFailedAfterAcquisition
+
+        if isinstance(error, BuildFailedAfterAcquisition) and not isinstance(
+            error.cause, (RuntimeError, ValueError)
+        ):
+            raise error.cause from error
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(2) from error
 

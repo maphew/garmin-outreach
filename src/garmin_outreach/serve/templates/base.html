@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}garmin-outreach{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <h1><a href="/">garmin-outreach</a></h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/messages">Messages</a>
+      <a href="/map">Map</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script type="module" src="/static/{{ datastar_filename }}"></script>
+</body>
+</html>

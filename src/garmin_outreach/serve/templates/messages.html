@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Messages - garmin-outreach{% endblock %}
+{% block content %}
+<section>
+  <h2>Messages</h2>
+  {% if messages["total"] == 0 %}
+  <p>
+    No messages found. Run
+    <code>garmin-outreach build</code> or <code>garmin-outreach mapshare</code>
+    to populate this page.
+  </p>
+  {% else %}
+  <p>
+    Page {{ messages["page"] }} of {{ messages["pages"] }}
+    ({{ messages["total"] }} messages, {{ messages["undated"] }} undated)
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp (UTC)</th>
+        <th>Event</th>
+        <th>Text</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(undated_shown=false) %}
+      {% for entry in messages["entries"] %}
+      {% if entry["timestamp_utc"] is none and not ns.undated_shown %}
+      <tr class="section-label"><td colspan="3"><strong>Undated</strong></td></tr>
+      {% set ns.undated_shown = true %}
+      {% endif %}
+      <tr>
+        <td>{{ entry["timestamp_utc"] if entry["timestamp_utc"] else "no timestamp" }}</td>
+        <td>{{ entry["event"] if entry["event"] else "n/a" }}</td>
+        <td>{{ entry["text"] if entry["text"] else "n/a" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <nav class="pager">
+    {% if messages["page"] > 1 %}
+    <a href="/messages?page={{ messages["page"] - 1 }}">Previous</a>
+    {% endif %}
+    {% if messages["page"] < messages["pages"] %}
+    <a href="/messages?page={{ messages["page"] + 1 }}">Next</a>
+    {% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

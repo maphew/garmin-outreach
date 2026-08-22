@@ -75,12 +75,17 @@ ui = [
   "starlette>=0.40,<1",
   "uvicorn>=0.30,<1",
   "jinja2>=3.1,<4",
-  "datastar-py>=1.0.2,<2",
+  "datastar-py==1.0.2",
 ]
 ```
 
 Notes:
 
+- `datastar-py` is pinned exactly (not a range): the vendored `datastar.js`
+  under `src/garmin_outreach/serve/static/` is a specific released build, not
+  something `pip`/`uv` can re-resolve on its behalf, so the Python SDK and the
+  vendored JS must be bumped together in lockstep or the two can silently
+  drift out of protocol sync.
 - Starlette, not FastAPI: no request models, OpenAPI, or DI are used; avoids the
   pydantic-core compiled dependency subtree.
 - Jinja2 with `autoescape=True` and `StrictUndefined` is a security control, not
@@ -314,7 +319,9 @@ as part of the phases that introduce each surface:
   `script-src 'self'` (+ `'unsafe-eval'` only if pinned Datastar requires it —
   verified during implementation, each relaxation commented);
   `style-src 'self'`; `connect-src 'self'`; `img-src 'self' data: blob:`;
-  `worker-src blob:` (MapLibre CSP bundle); `object-src 'none'`;
+  `worker-src 'self'` (the MapLibre CSP bundle loads its worker from a
+  same-origin URL set via `setWorkerUrl`; the non-CSP build is the one that
+  needs `blob:`); `object-src 'none'`;
   `base-uri 'none'`; `frame-ancestors 'none'`; `form-action 'self'`.
 - **Headers everywhere**: `Cache-Control: no-store` on all HTML/API/error
   responses (immutable caching only on content-hashed static);
@@ -399,6 +406,6 @@ map, runtime data layout, test count) and `Readme.md` where user-facing.
 - **Stale outputs**: hint only, with the exact command; "Rebuild" becomes a
   button in Phase 3. Never auto-build (empty-archive `RuntimeError`, unbounded
   startup work).
-- **datastar-py**: `>=1.0.2,<2`; vendored JS at exactly the locked version;
-  agreement test; re-verify versions immediately before implementation (young
-  dependency).
+- **datastar-py**: `==1.0.2` (exact pin, see §4); vendored JS at exactly the
+  locked version; agreement test; re-verify versions immediately before
+  implementation (young dependency).

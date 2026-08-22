@@ -1,6 +1,6 @@
 # Garmin Outreach: Maintainer Guide
 
-Last verified: 2026-08-10
+Last verified: 2026-08-16
 
 This document is the implementation guide for maintainers. Read it before changing acquisition, parsing, identity, cleanup, or output behavior. User-facing setup and commands live in [Readme.md](Readme.md).
 
@@ -15,10 +15,35 @@ Version `0.1.0` is a working Python 3.11+ CLI with:
 - conservative derived-trip generation; and
 - GeoPackage, GeoJSON, and Shapefile output.
 
-Current verification covers 11 passing tests, Ruff, a locked uv environment on Python 3.11,
+Current verification covers 223 passing tests, Ruff, a locked uv environment on Python 3.11,
 generated-layer reads as `EPSG:4326`, Playwright Chromium launch, and the intended signed-out
 headless Explore failure. The authenticated Explore POST has not yet received broad real-account
 validation, so the browser integration remains experimental.
+
+`garmin-outreach serve` (requires the optional `ui` extra) runs a local, loopback-only web
+dashboard over `data/` outputs, including a messages timeline (`/messages`) and a map (`/map`). The
+read-only routes never take the writer lock and never trigger a rebuild on their own, only reading
+whatever `summary.json`/`mapshare-state.json` already say. The map is offline-only: MapLibre GL JS
+is vendored locally and the page never makes external tile requests.
+
+A Jobs section on the dashboard triggers `build`/`mapshare`/`explore` through the same
+`services.run_*` orchestration the CLI uses (single-flight per process, daemon worker threads).
+Live updates -- job state changes, mapshare progress, and a refreshed freshness/layers/capabilities
+summary -- stream over `GET /api/events` (Server-Sent Events via Datastar) rather than polling.
+That route responds `Cache-Control: no-store, no-transform`; a `503` (subscriber cap reached) or a
+clean stream end is *not* retried by Datastar's default "auto" retry mode, so a tab stuck on either
+needs a manual reload, not just time. Every job POST is guarded by cross-site request defenses
+(`Sec-Fetch-Site`, a per-process custom header, `Content-Type: application/json`); job POST bodies
+accept only bounded `trip_gap_hours`/`max_speed_kmh`/`jump_km` overrides, never an identifier, feed
+URL, password, or cookie material from the browser. Scripting `POST /api/jobs/*` from outside a
+browser (curl, httpx) requires forging a `Sec-Fetch-Site` value and the per-process token, so a
+bare 403 there is the intended policy, not a bug. `GET /api/events` applies a weaker, cap-protection-only
+version of that same check (a present-but-cross-site `Sec-Fetch-Site` is rejected; an absent header
+is allowed, unlike the POST routes, since a GET response carries no attacker-controlled mutation);
+`HEAD /api/events` is rejected outright (405) so it cannot pin a subscriber slot open forever.
+`garmin-outreach serve`'s Ctrl-C shutdown is bounded even with a browser tab's SSE stream still
+open -- `uvicorn.Config(timeout_graceful_shutdown=2)` in `app.py::run()` caps the wait instead of
+uvicorn's default (unbounded) graceful-shutdown behavior.
 
 ## Fast start
 
@@ -81,6 +106,14 @@ The central design choice is that acquisition and conversion are separate. Netwo
 | `src/garmin_outreach/cleanup.py` | Derived trip splitting and Haversine distance calculation |
 | `src/garmin_outreach/pipeline.py` | Raw-archive rebuild orchestration and parse-error collection |
 | `src/garmin_outreach/exporters.py` | GeoPandas/Pyogrio writers, atomic output replacement, Shapefile aliases |
+| `src/garmin_outreach/serve/app.py` | `create_app()`/`run()`: Starlette wiring, uvicorn startup, loopback-host validation (`ui` extra) |
+| `src/garmin_outreach/serve/artifacts.py` | Read-only, tolerant adapter that shapes `data/output/summary.json` and `mapshare-state.json` for the UI |
+| `src/garmin_outreach/serve/security.py` | Host allowlist middleware, security-header middleware, CSP string, and job-route CSRF defenses (`check_job_csrf`) |
+| `src/garmin_outreach/serve/jobs.py` | In-process single-flight job runner (`build`/`mapshare`/`explore`) over `services.run_*`, bounded-param validation, mapshare/explore capability detection, absolute-path scrubbing for job failure details |
+| `src/garmin_outreach/serve/events.py` | In-process pub/sub `EventBus` bridging job-runner worker threads to `GET /api/events` SSE connections: per-subscriber bounded queue with progress-coalescing on overflow, subscriber cap, loop-safe `publish()` from worker threads |
+| `src/garmin_outreach/serve/views.py` | Route handlers: dashboard, `/messages`, `/map`, `/api/summary`, `/api/layers/{name}.geojson`, `/api/jobs*`, `/api/events` (SSE), static assets, 404/500 fallbacks |
+| `src/garmin_outreach/serve/templates/` | Jinja2 templates for the dashboard (incl. Jobs section), messages timeline, and map (autoescaped, no raw `summary.json` fields). `_job_status.html` and `_summary_section.html` are shared fragments: each is rendered once for the initial page and again, byte-for-byte, as a `GET /api/events` `datastar-patch-elements` target (`#job-status`, `#summary-live`) |
+| `src/garmin_outreach/serve/static/` | Vendored, content-hashed Datastar and MapLibre GL JS bundles plus `app.css`/`map.js`/`jobs.js`. The map is offline-only: MapLibre is vendored and no external tile requests are ever made. |
 | `tests/fixtures/` | Synthetic, non-private Garmin-like KML and GPX |
 | `tests/` | Parser, trip, archive, sync-security, idempotency, and writer tests |
 
@@ -100,6 +133,7 @@ The central design choice is that acquisition and conversion are separate. Netwo
 
 ```text
 data/
+├── .writer.lock            # advisory interprocess writer lock; persists between runs; safe to ignore/delete when nothing is running
 ├── mapshare-state.json
 ├── .browser-profile/       # equivalent to an authenticated session; sensitive
 ├── raw/
@@ -114,6 +148,8 @@ data/
 ```
 
 `data/` and `.garmin-outreach/` are ignored. Treat anything already under `data/` as runtime/smoke-test state, not as a checked-in fixture or a source of truth.
+
+Every mutating CLI command (`ingest`, `mapshare`, `explore`, `build`) holds `.writer.lock` for the duration of its work; a concurrent mutating invocation fails fast with exit 2 instead of blocking or interleaving writes. The lock is not reentrant — nested acquisition within the same process also fails fast, with a distinct error message identifying the lock as already held by this process.
 
 ## Feature identity and idempotency
 
@@ -238,7 +274,7 @@ GeoPandas constructs each layer and Pyogrio writes it. GeoPackage creation goes 
 
 Shapefile fields are limited to ten characters. Stable aliases live in `SHAPEFILE_ALIASES`; `shapefile/fields.json` records every original-to-short mapping. Add explicit aliases for new common fields to avoid unstable numeric suffixes.
 
-Only non-empty layers are created. `summary.json` includes feature counts, layer counts, formats, paths, raw input count, and parse errors.
+Only non-empty layers are created. `summary.json` includes feature counts, layer counts, formats, paths, raw input count, parse errors, and a per-layer `bbox` (omitted for a layer whose bounds are non-finite).
 
 ## Verification expectations
 

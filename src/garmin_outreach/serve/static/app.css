@@ -1,0 +1,55 @@
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  margin: 2rem auto;
+  max-width: 60rem;
+  color: #1a1a1a;
+}
+
+table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+
+th,
+td {
+  border: 1px solid #ccc;
+  padding: 0.25rem 0.75rem;
+  text-align: left;
+}
+
+code {
+  background: #f0f0f0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.2rem;
+}
+
+section {
+  margin-bottom: 1.5rem;
+}
+
+#map-layout {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+#map {
+  height: 60vh;
+  min-height: 24rem;
+  flex: 1 1 30rem;
+}
+
+#layer-toggle-panel {
+  flex: 0 0 14rem;
+}
+
+@media (max-width: 40rem) {
+  #map-layout {
+    flex-direction: column;
+  }
+
+  #layer-toggle-panel {
+    flex: 1 1 auto;
+  }
+}

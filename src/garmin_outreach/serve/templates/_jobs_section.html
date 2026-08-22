@@ -1,0 +1,23 @@
+{# docs/spec-serve-ui.md section 7 Phase B/4 ("SSE contract" / dashboard
+   integration). `data-init` opens the live-update SSE connection exactly
+   once, when this section first enters the DOM -- it is never itself the
+   target of a `datastar-patch-elements` morph (only #job-status, included
+   below, is), so it cannot re-fire on every event. Buttons and hints stay
+   outside #job-status for the same reason: a patch that replaced them
+   would kill their `jobs.js` click listeners. #}
+<section id="jobs" data-init="@get('/api/events')">
+  <h2>Jobs</h2>
+  {% include "_job_status.html" %}
+  <p>
+    <button type="button" id="job-build-button" data-job-kind="build">Build</button>
+    <button type="button" id="job-mapshare-button" data-job-kind="mapshare" {% if not jobs["mapshare_available"] %}disabled{% endif %}>MapShare sync</button>
+    <button type="button" id="job-explore-button" data-job-kind="explore" {% if not jobs["explore_available"] %}disabled{% endif %}>Explore export</button>
+  </p>
+  <p class="job-hint">Jobs run in the background; closing the server (Ctrl-C) abandons in-flight network work.</p>
+  {% if not jobs["mapshare_available"] %}
+  <p class="job-hint">MapShare sync disabled: {{ jobs["mapshare_hint"] }}</p>
+  {% endif %}
+  {% if not jobs["explore_available"] %}
+  <p class="job-hint">Explore export disabled: {{ jobs["explore_hint"] }}</p>
+  {% endif %}
+</section>

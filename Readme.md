@@ -25,7 +25,7 @@ The default output directory is `data/output/`:
 | `garmin-outreach.gpkg` | One QGIS-ready GeoPackage with a layer per data type |
 | `geojson/*.geojson` | Portable GeoJSON files |
 | `shapefile/*.shp` | Shapefiles plus `fields.json`, which records shortened field names |
-| `summary.json` | Feature counts, input counts, parse errors, and written paths |
+| `summary.json` | Feature counts, input counts, parse errors, written paths, and a per-layer `bbox` |
 
 Layers are created when that kind of data exists:
 
@@ -139,6 +139,25 @@ These deliberately conservative defaults avoid drawing spurious lines between se
 ```powershell
 uv run garmin-outreach build --trip-gap-hours 12 --jump-km 25 --max-speed-kmh 160
 ```
+
+## Local web UI (preview)
+
+An optional local dashboard shows the current pipeline status: layer feature counts, output
+freshness, capabilities, and recent parse errors.
+
+```powershell
+uv sync --extra ui
+uv run garmin-outreach serve
+```
+
+This opens `http://127.0.0.1:8477` in your browser. The server binds to loopback only by design
+(no remote access). The dashboard shows freshness and layer counts, `/messages` is a paged
+messages timeline, and `/map` is an offline map (vendored MapLibre, no external tile requests).
+The dashboard's Jobs buttons can trigger `build`, `mapshare`, and `explore` runs; those jobs
+acquire the same `data/` writer lock as the CLI, so a job and a terminal command cannot
+interleave writes (whichever starts second fails fast). Reading pages never mutates `data/`;
+only the Jobs buttons do. Job progress streams live to the dashboard; closing the server
+(Ctrl-C) abandons in-flight network work.
 
 ## Automation example
 

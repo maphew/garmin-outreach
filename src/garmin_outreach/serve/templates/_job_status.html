@@ -1,0 +1,17 @@
+{# Shared by dashboard.html (full page render) and views._render_job_status_html
+   (the SSE patch fragment served by GET /api/events). Keeping this in its
+   own include is the "single source" required by docs/spec-serve-ui.md
+   section 7 Phase B: whatever HTML the initial page ships with here must be
+   byte-for-byte what a `datastar-patch-elements` event replaces it with,
+   or the very first SSE patch after connect would visibly flicker. #}
+<p id="job-status">
+  {% if jobs["current"] %}
+  {{ jobs["current"]["kind"] }}: {{ jobs["current"]["state"] }} (started {{ jobs["current"]["started_utc"] }}{% if jobs["current"]["progress"] %}, windows done {{ jobs["current"]["progress"]["windows_done"] }}{% endif %})
+  {% elif jobs["last"] %}
+  {% for kind, snapshot in jobs["last"].items() %}
+  last {{ kind }}: {{ snapshot["state"] }} (finished {{ snapshot["finished_utc"] }}){% if snapshot["detail"] %} -- {{ snapshot["detail"] }}{% endif %}<br>
+  {% endfor %}
+  {% else %}
+  No job has run yet.
+  {% endif %}
+</p>

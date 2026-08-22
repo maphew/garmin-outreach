@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -98,13 +99,24 @@ def write_outputs(
         _replace_directory(target, lambda temp: _write_shapefiles(frames, temp))
         written["shp"] = [str(target / f"{layer}.shp") for layer in frames]
 
+    # Non-finite coordinates (e.g. a stray "nan"/"inf" token in an input
+    # file) would otherwise leak a literal NaN/Infinity into summary.json,
+    # which json.dumps writes by default but browsers cannot parse. Omit
+    # the layer's bbox entirely rather than publish a bad bounding box.
+    bbox = {}
+    for layer, frame in frames.items():
+        bounds = [float(value) for value in frame.total_bounds]
+        if all(math.isfinite(value) for value in bounds):
+            bbox[layer] = bounds
+
     summary = {
         "feature_count": len(features),
         "layers": dict(sorted(Counter(feature.layer for feature in features).items())),
         "formats": list(formats),
         "written": written,
+        "bbox": bbox,
     }
-    _atomic_text(output_dir / "summary.json", json.dumps(summary, indent=2) + "\n")
+    _atomic_text(output_dir / "summary.json", json.dumps(summary, indent=2, allow_nan=False) + "\n")
     return summary
 
 
